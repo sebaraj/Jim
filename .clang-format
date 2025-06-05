@@ -1,0 +1,9 @@
+BasedOnStyle: Google
+IndentWidth: 4
+TabWidth: 4
+UseTab: Never
+AccessModifierOffset: -4
+ColumnLimit: 100
+BreakBeforeBinaryOperators: true
+PenaltyBreakAssignment: 0
+AlignOperands: true
