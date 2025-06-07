@@ -8,6 +8,36 @@
 #include <iostream>
 #include <sstream>
 #include <string>
+#ifdef HAVE_CUB
+#include <cub/block/block_reduce.cuh>
+#endif  // HAVE_CUB
+
+// From NVIDIA repo
+#ifdef USE_NVTX
+#include <nvtx3/nvToolsExt.h>
+
+const uint32_t colors[]
+    = {0x0000ff00, 0x000000ff, 0x00ffff00, 0x00ff00ff, 0x0000ffff, 0x00ff0000, 0x00ffffff};
+const int num_colors = sizeof(colors) / sizeof(uint32_t);
+
+#define PUSH_RANGE(name, cid)                              \
+    {                                                      \
+        int color = cid;                                   \
+        color = color_id % num_colors;                     \
+        nvtxEventAttributes_t eventAttrib = {0};           \
+        eventAttrib.version = NVTX_VERSION;                \
+        eventAttrib.size = NVTX_EVENT_ATTRIB_STRUCT_SIZE;  \
+        eventAttrib.colorType = NVTX_COLOR_ARGB;           \
+        eventAttrib.color = colors[color_id];              \
+        eventAttrib.messageType = NVTX_MESSAGE_TYPE_ASCII; \
+        eventAttrib.message.ascii = name;                  \
+        nvtxRangePushEx(&eventAttrib);                     \
+    }
+#define POP_RANGE nvtxRangePop();
+#else
+#define PUSH_RANGE(name, cid)
+#define POP_RANGE
+#endif
 
 // Generic argument parsing functions
 template <typename T>
@@ -42,16 +72,51 @@ bool get_argbool(char** begin, char** end, const std::string& arg) {
 
 constexpr float PI = M_PI;
 constexpr float tol = 1.0e-8;
-constexpr int MAX_NUM_DEV = 8;  // max for aws/gcp instance options?
+constexpr int MAX_NUM_DEV = 4;  // cluster size @ vast.ai
 
-void initialize_bounds(float* const a_new, float* const a, const float pi, const int offset,
-                       const int nx, const int my_ny, const int ny) {
+__global__ void initialize_bounds(float* __restrict__ const a_new, float* __restrict__ const a,
+                                  const float pi, const int offset, const int nx, const int my_ny,
+                                  const int ny) {
     for (int iy = blockIdx.x * blockDim.x + threadIdx.x; iy < my_ny; iy += blockDim.x * gridDim.x) {
         const float y0 = sin(2.0 * pi * (offset + iy) / (ny - 1));
         a[iy * nx] = y0;
         a[iy * nx + (nx - 1)] = y0;
         a_new[iy * nx] = y0;
         a_new[iy * nx + (nx - 1)] = y0;
+    }
+}
+
+template <int BLOCK_DIM_X, int BLOCK_DIM_Y>
+__global__ void jacobi_kernel(float* __restrict__ const a_new, const float* __restrict__ const a,
+                              float* __restrict__ const l2_norm, const int iy_start,
+                              const int iy_end, const int nx, const bool calculate_norm) {
+#ifdef HAVE_CUB
+    typedef cub::BlockReduce<float, BLOCK_DIM_X, cub::BLOCK_REDUCE_WARP_REDUCTIONS, BLOCK_DIM_Y>
+        BlockReduce;
+    __shared__ typename BlockReduce::TempStorage temp_storage;
+#endif  // HAVE_CUB
+    int iy = blockIdx.y * blockDim.y + threadIdx.y + iy_start;
+    int ix = blockIdx.x * blockDim.x + threadIdx.x + 1;
+    float local_l2_norm = 0.0;
+
+    if (iy < iy_end && ix < (nx - 1)) {
+        const float val_new = 0.25
+                              * (a[iy * nx + ix + 1] + a[iy * nx + ix - 1] + a[(iy + 1) * nx + ix]
+                                 + a[(iy - 1) * nx + ix]);
+        a_new[nx * iy + ix] = val_new;
+
+        if (calculate_norm) {
+            float residue = val_new - a[iy * nx + ix];
+            local_l2_norm += residue * residue;
+        }
+    }
+    if (calculate_norm) {
+#ifdef HAVE_CUB
+        float block_l2_norm = BlockReduce(temp_storage).Sum(local_l2_norm);
+        if (0 == threadIdx.y && 0 == threadIdx.x) atomicAdd(l2_norm, block_l2_norm);
+#else
+        atomicAdd(l2_norm, local_l2_norm);
+#endif  // HAVE_CUB
     }
 }
 

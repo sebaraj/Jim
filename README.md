@@ -1,4 +1,4 @@
-## Multi-GPU Jacobi Solver for 2D Laplace equations
+## Multi-GPU Jacobi Solvers for 2D Laplace equations
 
 This repository contains the following implementations of the Jacobi method for solving 2D Laplace
 equations using C++, CUDA, NCCL, NVSHMEM, OpenMP, and MPI.
@@ -6,6 +6,14 @@ equations using C++, CUDA, NCCL, NVSHMEM, OpenMP, and MPI.
 - memcpy_single: a single-threaded implementation using cudaMemcpy for GPU communication
 
 ### Requirements
+
+- CUDA
+- OpenMP
+- MPI
+- NCCL
+- NVSHMEM
+- NVCC-compatible hardware. I used an NVIDIA RTX 4090 for development and a cluster of 4 NVIDIA
+  H200s for testing on vast.ai.
 
 ### Build
 
