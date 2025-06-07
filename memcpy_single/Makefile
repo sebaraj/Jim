@@ -25,7 +25,7 @@ run: jacobi
 	./jacobi
 
 profile: jacobi
-	nsys profile --trace=cuda,nvtx -o jacobi ./jacobi -niter 10
+	nsys profile --trace=cuda,nvtx -o jacobi ./jacobi -niter 5
 
 sanitize: jacobi
 	compute-sanitizer ./jacobi -niter 5
