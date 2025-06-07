@@ -56,9 +56,102 @@ void initialize_bounds(float* const a_new, float* const a, const float pi, const
 }
 
 double single_gpu(const int nx, const int ny, const int iter_max, float* const a_ref_h,
-                  const int nccheck, const bool print) {
-    // TODO: Finish this impl
-    return 0.0;
+                  const int nccheck, const bool debug) {
+    // DONE: Finish this impl
+    float* a;
+    float* a_new;
+
+    cudaStream_t compute_stream;
+    cudaStream_t push_top_stream;
+    cudaStream_t push_bottom_stream;
+    cudaEvent_t compute_done;
+    cudaEvent_t push_top_done;
+    cudaEvent_t push_bottom_done;
+
+    float* l2_norm_d;
+    float* l2_norm_h;
+
+    int iy_start = 1;
+    int iy_end = (ny - 1);
+
+    CUDA_RT_CALL(cudaMalloc(&a, nx * ny * sizeof(float)));
+    CUDA_RT_CALL(cudaMalloc(&a_new, nx * ny * sizeof(float)));
+    CUDA_RT_CALL(cudaMemset(a, 0, nx * ny * sizeof(float)));
+    CUDA_RT_CALL(cudaMemset(a_new, 0, nx * ny * sizeof(float)));
+
+    // diriclet boundaries
+    initialize_boundaries<<<ny / 128 + 1, 128>>>(a, a_new, PI, 0, nx, ny, ny);
+    CUDA_RT_CALL(cudaGetLastError());
+    CUDA_RT_CALL(cudaDeviceSynchronize());
+    CUDA_RT_CALL(cudaStreamCreate(&compute_stream));
+    CUDA_RT_CALL(cudaStreamCreate(&push_top_stream));
+    CUDA_RT_CALL(cudaStreamCreate(&push_bottom_stream));
+    CUDA_RT_CALL(cudaEventCreateWithFlags(&compute_done, cudaEventDisableTiming));
+    CUDA_RT_CALL(cudaEventCreateWithFlags(&push_top_done, cudaEventDisableTiming));
+    CUDA_RT_CALL(cudaEventCreateWithFlags(&push_bottom_done, cudaEventDisableTiming));
+    CUDA_RT_CALL(cudaMalloc(&l2_norm_d, sizeof(float)));
+    CUDA_RT_CALL(cudaMallocHost(&l2_norm_h, sizeof(float)));
+    CUDA_RT_CALL(cudaDeviceSynchronize());
+
+    constexpr int dim_block_x = 32;
+    constexpr int dim_block_y = 32;
+    dim3 dim_grid((nx + dim_block_x - 1) / dim_block_x, (ny + dim_block_y - 1) / dim_block_y, 1);
+
+    bool calculate_norm = true;
+    int iter = 0;
+    float l2_norm = 1.0;
+    double start = omp_get_wtime();
+    PUSH_RANGE("Jacobi solve", 0)
+    while (l2_norm > tol && iter < iter_max) {
+        CUDA_RT_CALL(cudaMemsetAsync(l2_norm_d, 0, sizeof(float), compute_stream));
+        CUDA_RT_CALL(cudaStreamWaitEvent(compute_stream, push_top_done, 0));
+        CUDA_RT_CALL(cudaStreamWaitEvent(compute_stream, push_bottom_done, 0));
+        calculate_norm = (iter % nccheck) == 0 || (print && ((iter % 100) == 0));
+        jacobi_kernel<dim_block_x, dim_block_y>
+            <<<dim_grid, {dim_block_x, dim_block_y, 1}, 0, compute_stream>>>(
+                a_new, a, l2_norm_d, iy_start, iy_end, nx, calculate_norm);
+        CUDA_RT_CALL(cudaGetLastError());
+        CUDA_RT_CALL(cudaEventRecord(compute_done, compute_stream));
+
+        if (calculate_norm)
+            CUDA_RT_CALL(cudaMemcpyAsync(l2_norm_h, l2_norm_d, sizeof(float),
+                                         cudaMemcpyDeviceToHost, compute_stream));
+
+        CUDA_RT_CALL(cudaStreamWaitEvent(push_top_stream, compute_done, 0));
+        CUDA_RT_CALL(cudaMemcpyAsync(a_new, a_new + (iy_end - 1) * nx, nx * sizeof(float),
+                                     cudaMemcpyDeviceToDevice, push_top_stream));
+        CUDA_RT_CALL(cudaEventRecord(push_top_done, push_top_stream));
+        CUDA_RT_CALL(cudaStreamWaitEvent(push_bottom_stream, compute_done, 0));
+        CUDA_RT_CALL(cudaMemcpyAsync(a_new + iy_end * nx, a_new + iy_start * nx, nx * sizeof(float),
+                                     cudaMemcpyDeviceToDevice, compute_stream));
+        CUDA_RT_CALL(cudaEventRecord(push_bottom_done, push_bottom_stream));
+
+        if (calculate_norm) {
+            CUDA_RT_CALL(cudaStreamSynchronize(compute_stream));
+            l2_norm = *l2_norm_h;
+            l2_norm = std::sqrt(l2_norm);
+            if (debug && (iter % 100) == 0) printf("%5d, %0.6f\n", iter, l2_norm);
+        }
+
+        std::swap(a_new, a);
+        iter++;
+    }
+    POP_RANGE
+    double stop = omp_get_wtime();
+
+    CUDA_RT_CALL(cudaMemcpy(a_ref_h, a, nx * ny * sizeof(float), cudaMemcpyDeviceToHost));
+    CUDA_RT_CALL(cudaEventDestroy(push_bottom_done));
+    CUDA_RT_CALL(cudaEventDestroy(push_top_done));
+    CUDA_RT_CALL(cudaEventDestroy(compute_done));
+    CUDA_RT_CALL(cudaStreamDestroy(push_bottom_stream));
+    CUDA_RT_CALL(cudaStreamDestroy(push_top_stream));
+    CUDA_RT_CALL(cudaStreamDestroy(compute_stream));
+    CUDA_RT_CALL(cudaFreeHost(l2_norm_h));
+    CUDA_RT_CALL(cudaFree(l2_norm_d));
+    CUDA_RT_CALL(cudaFree(a_new));
+    CUDA_RT_CALL(cudaFree(a));
+    return (stop - start);
+    // return 0.0
 }
 
 int main(int argc, char* argv[]) {
@@ -104,10 +197,10 @@ int main(int argc, char* argv[]) {
         int num_ranks_low = num_devices * chunk_size_low + num_devices - (ny - 2);
         int chunk_size_high = chunk_size_low + 1;
         chunk_size[dev_id] = (dev_id < num_ranks_low) ? chunk_size_low : chunk_size_high;
-        CUDA_RT_CALL(cudaMalloc(a + dev_id, nx * (chunk_size[dev_id] + 2) * sizeof(real)));
-        CUDA_RT_CALL(cudaMalloc(a_new + dev_id, nx * (chunk_size[dev_id] + 2) * sizeof(real)));
-        CUDA_RT_CALL(cudaMemset(a[dev_id], 0, nx * (chunk_size[dev_id] + 2) * sizeof(real)));
-        CUDA_RT_CALL(cudaMemset(a_new[dev_id], 0, nx * (chunk_size[dev_id] + 2) * sizeof(real)));
+        CUDA_RT_CALL(cudaMalloc(a + dev_id, nx * (chunk_size[dev_id] + 2) * sizeof(float)));
+        CUDA_RT_CALL(cudaMalloc(a_new + dev_id, nx * (chunk_size[dev_id] + 2) * sizeof(float)));
+        CUDA_RT_CALL(cudaMemset(a[dev_id], 0, nx * (chunk_size[dev_id] + 2) * sizeof(float)));
+        CUDA_RT_CALL(cudaMemset(a_new[dev_id], 0, nx * (chunk_size[dev_id] + 2) * sizeof(float)));
 
         // Calculate local domain boundaries
         int iy_start_global;
@@ -122,5 +215,40 @@ int main(int argc, char* argv[]) {
         iy_end[dev_id] = iy_start[dev_id] + chunk_size[dev_id];
 
         // TODO: set boundaries on left/right
+        initialize_bounds<<<(ny / num_devices) / 128 + 1, 128>>>(
+            a[dev_id], a_new[dev_id], PI, iy_start_global - 1, nx, (chunk_size[dev_id] + 2), ny);
+
+        CUDA_RT_CALL(cudaGetLastError());
+        CUDA_RT_CALL(cudaDeviceSynchronize());
+        CUDA_RT_CALL(cudaStreamCreate(compute_stream + dev_id));
+        CUDA_RT_CALL(cudaStreamCreate(push_top_stream + dev_id));
+        CUDA_RT_CALL(cudaStreamCreate(push_bottom_stream + dev_id));
+
+        CUDA_RT_CALL(cudaEventCreateWithFlags(compute_done + dev_id, cudaEventDisableTiming));
+        CUDA_RT_CALL(cudaEventCreateWithFlags(push_top_done[0] + dev_id, cudaEventDisableTiming));
+        CUDA_RT_CALL(
+            cudaEventCreateWithFlags(push_bottom_done[0] + dev_id, cudaEventDisableTiming));
+        CUDA_RT_CALL(cudaEventCreateWithFlags(push_top_done[1] + dev_id, cudaEventDisableTiming));
+        CUDA_RT_CALL(
+            cudaEventCreateWithFlags(push_bottom_done[1] + dev_id, cudaEventDisableTiming));
+
+        CUDA_RT_CALL(cudaMalloc(l2_norm_d + dev_id, sizeof(float)));
+        CUDA_RT_CALL(cudaMallocHost(l2_norm_h + dev_id, sizeof(float)));
+
+        if (!nop2p) {
+            const int top = dev_id > 0 ? dev_id - 1 : (num_devices - 1);
+            int canAccessPeer = 0;
+
+            CUDA_RT_CALL(cudaDeviceCanAccessPeer(&canAccessPeer, dev_id, top));
+
+            if (canAccessPeer) CUDA_RT_CALL(cudaDeviceEnablePeerAccess(top, 0));
+            const int bottom = (dev_id + 1) % num_devices;
+            if (top != bottom) {
+                canAccessPeer = 0;
+                CUDA_RT_CALL(cudaDeviceCanAccessPeer(&canAccessPeer, dev_id, bottom));
+                if (canAccessPeer) CUDA_RT_CALL(cudaDeviceEnablePeerAccess(bottom, 0));
+            }
+        }
+        CUDA_RT_CALL(cudaDeviceSynchronize());
     }
 }
