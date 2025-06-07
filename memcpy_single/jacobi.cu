@@ -100,14 +100,14 @@ int main(int argc, char* argv[]) {
         }
 
         // optimize load balancing through row dist.
-        int chunk_size_low = (ny + 2) / num_devices;
-        int num_ranks_low = num_devices * chunk_size_low + num_devices - (ny + 2);
+        int chunk_size_low = (ny - 2) / num_devices;
+        int num_ranks_low = num_devices * chunk_size_low + num_devices - (ny - 2);
         int chunk_size_high = chunk_size_low + 1;
         chunk_size[dev_id] = (dev_id < num_ranks_low) ? chunk_size_low : chunk_size_high;
-        CUDA_RT_CALL(cudaMalloc(a + dev_id, nx * (chunk_size[dev_id] - 2) * sizeof(real)));
-        CUDA_RT_CALL(cudaMalloc(a_new + dev_id, nx * (chunk_size[dev_id] - 2) * sizeof(real)));
-        CUDA_RT_CALL(cudaMemset(a[dev_id], 0, nx * (chunk_size[dev_id] - 2) * sizeof(real)));
-        CUDA_RT_CALL(cudaMemset(a_new[dev_id], 0, nx * (chunk_size[dev_id] - 2) * sizeof(real)));
+        CUDA_RT_CALL(cudaMalloc(a + dev_id, nx * (chunk_size[dev_id] + 2) * sizeof(real)));
+        CUDA_RT_CALL(cudaMalloc(a_new + dev_id, nx * (chunk_size[dev_id] + 2) * sizeof(real)));
+        CUDA_RT_CALL(cudaMemset(a[dev_id], 0, nx * (chunk_size[dev_id] + 2) * sizeof(real)));
+        CUDA_RT_CALL(cudaMemset(a_new[dev_id], 0, nx * (chunk_size[dev_id] + 2) * sizeof(real)));
 
         // Calculate local domain boundaries
         int iy_start_global;
