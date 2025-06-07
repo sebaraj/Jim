@@ -316,4 +316,106 @@ int main(int argc, char* argv[]) {
         }
         CUDA_RT_CALL(cudaDeviceSynchronize());
     }
+
+    for (int i = 0; i < 4; ++i) {
+        for (int dev_id = 0; dev_id < num_devices; ++dev_id) {
+            CUDA_RT_CALL(cudaSetDevice(dev_id));
+            const int top = dev_id > 0 ? dev_id - 1 : (num_devices - 1);
+            const int bottom = (dev_id + 1) % num_devices;
+            CUDA_RT_CALL(cudaMemcpyAsync(a_new[top] + (iy_end[top] * nx),
+                                         a_new[dev_id] + iy_start[dev_id] * nx, nx * sizeof(real),
+                                         cudaMemcpyDeviceToDevice, push_top_stream[dev_id]));
+            CUDA_RT_CALL(cudaMemcpyAsync(a_new[bottom], a_new[dev_id] + (iy_end[dev_id] - 1) * nx,
+                                         nx * sizeof(real), cudaMemcpyDeviceToDevice,
+                                         push_bottom_stream[dev_id]));
+        }
+        for (int dev_id = 0; dev_id < num_devices; ++dev_id) {
+            CUDA_RT_CALL(cudaSetDevice(dev_id));
+            CUDA_RT_CALL(cudaStreamSynchronize(push_top_stream[dev_id]));
+            CUDA_RT_CALL(cudaStreamSynchronize(push_bottom_stream[dev_id]));
+        }
+        for (int dev_id = 0; dev_id < num_devices; ++dev_id) {
+            std::swap(a_new[dev_id], a[dev_id]);
+        }
+    }
+
+    constexpr int dim_block_x = 32;
+    constexpr int dim_block_y = 32;
+    int iter = 0;
+    bool calculate_norm = true;
+    real l2_norm = 1.0;
+
+    for (int dev_id = 0; dev_id < num_devices; ++dev_id) {
+        CUDA_RT_CALL(cudaSetDevice(dev_id));
+        CUDA_RT_CALL(cudaDeviceSynchronize());
+    }
+    double start = omp_get_wtime();
+    PUSH_RANGE("Jacobi solve", 0)
+    while (l2_norm > tol && iter < iter_max) {
+        for (int dev_id = 0; dev_id < num_devices; ++dev_id) {
+            const int top = dev_id > 0 ? dev_id - 1 : (num_devices - 1);
+            const int bottom = (dev_id + 1) % num_devices;
+            CUDA_RT_CALL(cudaSetDevice(dev_id));
+
+            CUDA_RT_CALL(
+                cudaMemsetAsync(l2_norm_d[dev_id], 0, sizeof(real), compute_stream[dev_id]));
+
+            CUDA_RT_CALL(
+                cudaStreamWaitEvent(compute_stream[dev_id], push_top_done[(iter % 2)][bottom], 0));
+            CUDA_RT_CALL(
+                cudaStreamWaitEvent(compute_stream[dev_id], push_bottom_done[(iter % 2)][top], 0));
+
+            calculate_norm = (iter % nccheck) == 0 || (!csv && (iter % 100) == 0);
+            dim3 dim_grid((nx + dim_block_x - 1) / dim_block_x,
+                          (chunk_size[dev_id] + dim_block_y - 1) / dim_block_y, 1);
+
+            jacobi_kernel<dim_block_x, dim_block_y>
+                <<<dim_grid, {dim_block_x, dim_block_y, 1}, 0, compute_stream[dev_id]>>>(
+                    a_new[dev_id], a[dev_id], l2_norm_d[dev_id], iy_start[dev_id], iy_end[dev_id],
+                    nx, calculate_norm);
+            CUDA_RT_CALL(cudaGetLastError());
+            CUDA_RT_CALL(cudaEventRecord(compute_done[dev_id], compute_stream[dev_id]));
+
+            if (calculate_norm) {
+                CUDA_RT_CALL(cudaMemcpyAsync(l2_norm_h[dev_id], l2_norm_d[dev_id], sizeof(real),
+                                             cudaMemcpyDeviceToHost, compute_stream[dev_id]));
+            }
+
+            // periodic boundary conds
+            CUDA_RT_CALL(cudaStreamWaitEvent(push_top_stream[dev_id], compute_done[dev_id], 0));
+            CUDA_RT_CALL(cudaMemcpyAsync(a_new[top] + (iy_end[top] * nx),
+                                         a_new[dev_id] + iy_start[dev_id] * nx, nx * sizeof(real),
+                                         cudaMemcpyDeviceToDevice, push_top_stream[dev_id]));
+            CUDA_RT_CALL(
+                cudaEventRecord(push_top_done[((iter + 1) % 2)][dev_id], push_top_stream[dev_id]));
+
+            CUDA_RT_CALL(cudaStreamWaitEvent(push_bottom_stream[dev_id], compute_done[dev_id], 0));
+            CUDA_RT_CALL(cudaMemcpyAsync(a_new[bottom], a_new[dev_id] + (iy_end[dev_id] - 1) * nx,
+                                         nx * sizeof(real), cudaMemcpyDeviceToDevice,
+                                         push_bottom_stream[dev_id]));
+            CUDA_RT_CALL(cudaEventRecord(push_bottom_done[((iter + 1) % 2)][dev_id],
+                                         push_bottom_stream[dev_id]));
+        }
+        if (calculate_norm) {
+            l2_norm = 0.0;
+            for (int dev_id = 0; dev_id < num_devices; ++dev_id) {
+                CUDA_RT_CALL(cudaStreamSynchronize(compute_stream[dev_id]));
+                l2_norm += *(l2_norm_h[dev_id]);
+            }
+
+            l2_norm = std::sqrt(l2_norm);
+            if (!csv && (iter % 100) == 0) printf("%5d, %0.6f\n", iter, l2_norm);
+        }
+
+        for (int dev_id = 0; dev_id < num_devices; ++dev_id) {
+            std::swap(a_new[dev_id], a[dev_id]);
+        }
+        iter++;
+    }
+    for (int dev_id = 0; dev_id < num_devices; ++dev_id) {
+        CUDA_RT_CALL(cudaSetDevice(dev_id));
+        CUDA_RT_CALL(cudaDeviceSynchronize());
+    }
+    POP_RANGE
+    double stop = omp_get_wtime();
 }
