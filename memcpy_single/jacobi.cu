@@ -418,4 +418,63 @@ int main(int argc, char* argv[]) {
     }
     POP_RANGE
     double stop = omp_get_wtime();
+
+    int offset = nx;
+    for (int dev_id = 0; dev_id < num_devices; ++dev_id) {
+        CUDA_RT_CALL(
+            cudaMemcpy(a_h + offset, a[dev_id] + nx,
+                       std::min((nx * ny) - offset, nx * chunk_size[dev_id]) * sizeof(real),
+                       cudaMemcpyDeviceToHost));
+        offset += std::min(chunk_size[dev_id] * nx, (nx * ny) - offset);
+    }
+    bool result_correct = true;
+    for (int iy = 1; result_correct && (iy < (ny - 1)); ++iy) {
+        for (int ix = 1; result_correct && (ix < (nx - 1)); ++ix) {
+            if (std::fabs(a_ref_h[iy * nx + ix] - a_h[iy * nx + ix]) > tol) {
+                fprintf(stderr,
+                        "ERROR: a[%d * %d + %d] = %f does not match %f "
+                        "(reference)\n",
+                        iy, nx, ix, a_h[iy * nx + ix], a_ref_h[iy * nx + ix]);
+                result_correct = false;
+            }
+        }
+    }
+    if (result_correct) {
+        if (csv) {
+            printf("single_threaded_copy, %d, %d, %d, %d, %d, %d, %f, %f\n", nx, ny, iter_max,
+                   nccheck, num_devices, nop2p ? 0 : 1, (stop - start), runtime_serial);
+        } else {
+            printf("Num GPUs: %d.\n", num_devices);
+            printf(
+                "%dx%d: 1 GPU: %8.4f s, %d GPUs: %8.4f s, speedup: %8.2f, "
+                "efficiency: %8.2f \n",
+                ny, nx, runtime_serial, num_devices, (stop - start),
+                runtime_serial / (stop - start),
+                runtime_serial / (num_devices * (stop - start)) * 100);
+        }
+    }
+
+    for (int dev_id = (num_devices - 1); dev_id >= 0; --dev_id) {
+        CUDA_RT_CALL(cudaSetDevice(dev_id));
+        CUDA_RT_CALL(cudaEventDestroy(push_bottom_done[1][dev_id]));
+        CUDA_RT_CALL(cudaEventDestroy(push_top_done[1][dev_id]));
+        CUDA_RT_CALL(cudaEventDestroy(push_bottom_done[0][dev_id]));
+        CUDA_RT_CALL(cudaEventDestroy(push_top_done[0][dev_id]));
+        CUDA_RT_CALL(cudaEventDestroy(compute_done[dev_id]));
+        CUDA_RT_CALL(cudaStreamDestroy(push_bottom_stream[dev_id]));
+        CUDA_RT_CALL(cudaStreamDestroy(push_top_stream[dev_id]));
+        CUDA_RT_CALL(cudaStreamDestroy(compute_stream[dev_id]));
+
+        CUDA_RT_CALL(cudaFreeHost(l2_norm_h[dev_id]));
+        CUDA_RT_CALL(cudaFree(l2_norm_d[dev_id]));
+
+        CUDA_RT_CALL(cudaFree(a_new[dev_id]));
+        CUDA_RT_CALL(cudaFree(a[dev_id]));
+        if (0 == dev_id) {
+            CUDA_RT_CALL(cudaFreeHost(a_h));
+            CUDA_RT_CALL(cudaFreeHost(a_ref_h));
+        }
+    }
+
+    return result_correct ? 0 : 1;
 }
