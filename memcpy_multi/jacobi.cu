@@ -374,82 +374,93 @@ int main(int argc, char* argv[]) {
         double start = omp_get_wtime();
         PUSH_RANGE("Jacobi solve", 0)
         while (l2_norm > tol && iter < iter_max) {
-            for (int dev_id = 0; dev_id < num_devices; ++dev_id) {
-                const int top = dev_id > 0 ? dev_id - 1 : (num_devices - 1);
-                const int bottom = (dev_id + 1) % num_devices;
-                CUDA_RT_CALL(cudaSetDevice(dev_id));
+            // for (int dev_id = 0; dev_id < num_devices; ++dev_id) {
+            CUDA_RT_CALL(cudaMemsetAsync(l2_norm_d, 0, sizeof(real), compute_stream));
 
-                CUDA_RT_CALL(
-                    cudaMemsetAsync(l2_norm_d[dev_id], 0, sizeof(real), compute_stream[dev_id]));
+            const int top = dev_id > 0 ? dev_id - 1 : (num_devices - 1);
+            const int bottom = (dev_id + 1) % num_devices;
+            // CUDA_RT_CALL(cudaSetDevice(dev_id));
 
-                CUDA_RT_CALL(cudaStreamWaitEvent(compute_stream[dev_id],
-                                                 push_top_done[(iter % 2)][bottom], 0));
-                CUDA_RT_CALL(cudaStreamWaitEvent(compute_stream[dev_id],
-                                                 push_bottom_done[(iter % 2)][top], 0));
+            CUDA_RT_CALL(cudaStreamWaitEvent(compute_stream, push_top_done[(iter % 2)][bottom], 0));
+            CUDA_RT_CALL(cudaStreamWaitEvent(compute_stream, push_bottom_done[(iter % 2)][top], 0));
 
-                calculate_norm = (iter % nccheck) == 0 || (!csv && (iter % 100) == 0);
-                dim3 dim_grid((nx + dim_block_x - 1) / dim_block_x,
-                              (chunk_size[dev_id] + dim_block_y - 1) / dim_block_y, 1);
+            calculate_norm = (iter % nccheck) == 0 || (!csv && (iter % 100) == 0);
+            // dim3 dim_grid((nx + dim_block_x - 1) / dim_block_x,
+            // (chunk_size[dev_id] + dim_block_y - 1) / dim_block_y, 1);
 
-                jacobi_kernel<dim_block_x, dim_block_y>
-                    <<<dim_grid, {dim_block_x, dim_block_y, 1}, 0, compute_stream[dev_id]>>>(
-                        a_new[dev_id], a[dev_id], l2_norm_d[dev_id], iy_start[dev_id],
-                        iy_end[dev_id], nx, calculate_norm);
-                CUDA_RT_CALL(cudaGetLastError());
-                CUDA_RT_CALL(cudaEventRecord(compute_done[dev_id], compute_stream[dev_id]));
+            jacobi_kernel<dim_block_x, dim_block_y>
+                <<<dim_grid, {dim_block_x, dim_block_y, 1}, 0, compute_stream[dev_id]>>>(
+                    a_new[dev_id], a, l2_norm_d, iy_start, iy_end[dev_id], nx, calculate_norm);
+            CUDA_RT_CALL(cudaGetLastError());
+            CUDA_RT_CALL(cudaEventRecord(compute_done, compute_stream));
 
-                if (calculate_norm) {
-                    CUDA_RT_CALL(cudaMemcpyAsync(l2_norm_h[dev_id], l2_norm_d[dev_id], sizeof(real),
-                                                 cudaMemcpyDeviceToHost, compute_stream[dev_id]));
-                }
-
-                // periodic boundary conds
-                CUDA_RT_CALL(cudaStreamWaitEvent(push_top_stream[dev_id], compute_done[dev_id], 0));
-                CUDA_RT_CALL(cudaMemcpyAsync(
-                    a_new[top] + (iy_end[top] * nx), a_new[dev_id] + iy_start[dev_id] * nx,
-                    nx * sizeof(real), cudaMemcpyDeviceToDevice, push_top_stream[dev_id]));
-                CUDA_RT_CALL(cudaEventRecord(push_top_done[((iter + 1) % 2)][dev_id],
-                                             push_top_stream[dev_id]));
-
-                CUDA_RT_CALL(
-                    cudaStreamWaitEvent(push_bottom_stream[dev_id], compute_done[dev_id], 0));
-                CUDA_RT_CALL(cudaMemcpyAsync(
-                    a_new[bottom], a_new[dev_id] + (iy_end[dev_id] - 1) * nx, nx * sizeof(real),
-                    cudaMemcpyDeviceToDevice, push_bottom_stream[dev_id]));
-                CUDA_RT_CALL(cudaEventRecord(push_bottom_done[((iter + 1) % 2)][dev_id],
-                                             push_bottom_stream[dev_id]));
-            }
-            if (calculate_norm) {
-                l2_norm = 0.0;
-                for (int dev_id = 0; dev_id < num_devices; ++dev_id) {
-                    CUDA_RT_CALL(cudaStreamSynchronize(compute_stream[dev_id]));
-                    l2_norm += *(l2_norm_h[dev_id]);
-                }
-
-                l2_norm = std::sqrt(l2_norm);
-                if (!csv && (iter % 100) == 0) printf("%5d, %0.6f\n", iter, l2_norm);
-            }
-
-            for (int dev_id = 0; dev_id < num_devices; ++dev_id) {
-                std::swap(a_new[dev_id], a[dev_id]);
-            }
-            iter++;
-        }
-        for (int dev_id = 0; dev_id < num_devices; ++dev_id) {
-            CUDA_RT_CALL(cudaSetDevice(dev_id));
-            CUDA_RT_CALL(cudaDeviceSynchronize());
-        }
-        POP_RANGE
-        double stop = omp_get_wtime();
-
-        int offset = nx;
-        for (int dev_id = 0; dev_id < num_devices; ++dev_id) {
+            if (calculate_norm)
+                CUDA_RT_CALL(cudaMemcpyAsync(l2_norm_h[dev_id], l2_norm_d[dev_id], sizeof(real),
+#pragma omp barrier
+            // periodic boundary conds
+            CUDA_RT_CALL(cudaStreamWaitEvent(push_top_stream, compute_done, 0));
+            CUDA_RT_CALL(cudaMemcpyAsync(a_new[top] + (iy_end[top] * nx),
+                                         a_new + iy_start * nx, nx * sizeof(real),
+                                         cudaMemcpyDeviceToDevice, push_top_stream));
             CUDA_RT_CALL(
-                cudaMemcpy(a_h + offset, a[dev_id] + nx,
-                           std::min((nx * ny) - offset, nx * chunk_size[dev_id]) * sizeof(real),
-                           cudaMemcpyDeviceToHost));
-            offset += std::min(chunk_size[dev_id] * nx, (nx * ny) - offset);
+                cudaEventRecord(push_top_done[((iter + 1) % 2)][dev_id], push_top_stream));
+
+            CUDA_RT_CALL(cudaStreamWaitEvent(push_bottom_stream, compute_done, 0));
+            CUDA_RT_CALL(cudaMemcpyAsync(a_new[bottom], a_new[dev_id] + (iy_end[dev_id] - 1) * nx,
+                                         nx * sizeof(real), cudaMemcpyDeviceToDevice,
+                                         push_bottom_stream));
+            CUDA_RT_CALL(cudaEventRecord(push_bottom_done[((iter + 1) % 2)][dev_id],
+                                         push_bottom_stream));
         }
+#pragma omp barrier
+        if (calculate_norm) {
+#pragma omp single
+            {
+                l2_norm = 0.0;
+            }
+#pragma omp barrier
+            // for (int dev_id = 0; dev_id < num_devices; ++dev_id) {
+            CUDA_RT_CALL(cudaStreamSynchronize(compute_stream));
+#pragma omp atomic
+            l2_norm += *(l2_norm_h);
+            // }
+#pragma omp barrier
+#pragma opm single
+            {
+                l2_norm = std::sqrt(l2_norm);
+            }
+#pragma omp barrier
+            if (!csv && (iter % 100) == 0) printf("%5d, %0.6f\n", iter, l2_norm);
+        }
+
+#pragma omp master
+        // for (int dev_id = 0; dev_id < num_devices; ++dev_id) {
+        std::swap(a_new[dev_id], a);
+        // }
+        iter++;
+    }
+    // for (int dev_id = 0; dev_id < num_devices; ++dev_id) {
+    // CUDA_RT_CALL(cudaSetDevice(dev_id));
+    CUDA_RT_CALL(cudaDeviceSynchronize());
+    // }
+#pragma omp barrier
+    double stop = omp_get_wtime();
+    POP_RANGE
+
+    // int offset = nx;
+    // for (int dev_id = 0; dev_id < num_devices; ++dev_id) {
+    CUDA_RT_CALL(cudaMemcpy(a_h + iy_start_global * nx, a + nx,
+                            std::min((ny - iy_start_global) * nx, chunk_size * nx) * sizeof(float),
+                            cudaMemcpyDeviceToHost));
+    // CUDA_RT_CALL(
+    // cudaMemcpy(a_h + offset, a + nx,
+    // std::min((nx * ny) - offset, nx * chunk_size[dev_id]) * sizeof(real),
+    // cudaMemcpyDeviceToHost));
+    // offset += std::min(chunk_size[dev_id] * nx, (nx * ny) - offset);
+#pragma omp barrier
+
+#pragma omp master
+    {
         bool result_correct = true;
         for (int iy = 1; result_correct && (iy < (ny - 1)); ++iy) {
             for (int ix = 1; result_correct && (ix < (nx - 1)); ++ix) {
@@ -476,28 +487,29 @@ int main(int argc, char* argv[]) {
                     runtime_serial / (num_devices * (stop - start)) * 100);
             }
         }
+    }  // omp master
 
-        for (int dev_id = (num_devices - 1); dev_id >= 0; --dev_id) {
-            CUDA_RT_CALL(cudaSetDevice(dev_id));
-            CUDA_RT_CALL(cudaEventDestroy(push_bottom_done[1][dev_id]));
-            CUDA_RT_CALL(cudaEventDestroy(push_top_done[1][dev_id]));
-            CUDA_RT_CALL(cudaEventDestroy(push_bottom_done[0][dev_id]));
-            CUDA_RT_CALL(cudaEventDestroy(push_top_done[0][dev_id]));
-            CUDA_RT_CALL(cudaEventDestroy(compute_done[dev_id]));
-            CUDA_RT_CALL(cudaStreamDestroy(push_bottom_stream[dev_id]));
-            CUDA_RT_CALL(cudaStreamDestroy(push_top_stream[dev_id]));
-            CUDA_RT_CALL(cudaStreamDestroy(compute_stream[dev_id]));
+    // for (int dev_id = (num_devices - 1); dev_id >= 0; --dev_id) {
+    // CUDA_RT_CALL(cudaSetDevice(dev_id));
+    CUDA_RT_CALL(cudaEventDestroy(push_bottom_done[1][dev_id]));
+    CUDA_RT_CALL(cudaEventDestroy(push_top_done[1][dev_id]));
+    CUDA_RT_CALL(cudaEventDestroy(push_bottom_done[0][dev_id]));
+    CUDA_RT_CALL(cudaEventDestroy(push_top_done[0][dev_id]));
+    CUDA_RT_CALL(cudaEventDestroy(compute_done));
+    CUDA_RT_CALL(cudaStreamDestroy(push_bottom_stream));
+    CUDA_RT_CALL(cudaStreamDestroy(push_top_stream));
+    CUDA_RT_CALL(cudaStreamDestroy(compute_stream));
 
-            CUDA_RT_CALL(cudaFreeHost(l2_norm_h[dev_id]));
-            CUDA_RT_CALL(cudaFree(l2_norm_d[dev_id]));
+    CUDA_RT_CALL(cudaFreeHost(l2_norm_h));
+    CUDA_RT_CALL(cudaFree(l2_norm_d));
 
-            CUDA_RT_CALL(cudaFree(a_new[dev_id]));
-            CUDA_RT_CALL(cudaFree(a[dev_id]));
-            if (0 == dev_id) {
-                CUDA_RT_CALL(cudaFreeHost(a_h));
-                CUDA_RT_CALL(cudaFreeHost(a_ref_h));
-            }
-        }
-
-        return result_correct ? 0 : 1;
+    CUDA_RT_CALL(cudaFree(a_new[dev_id]));
+    CUDA_RT_CALL(cudaFree(a));
+    if (dev_id == 0) {
+        CUDA_RT_CALL(cudaFreeHost(a_h));
+        CUDA_RT_CALL(cudaFreeHost(a_ref_h));
     }
+}
+
+return !result_correct;
+}
