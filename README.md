@@ -4,8 +4,8 @@ This repository contains the following implementations of the Jacobi method for 
 equations using C++, CUDA, NCCL, NVSHMEM, OpenMP, and MPI.
 
 - memcpy_single: a single-threaded implementation using cudaMemcpy for GPU communication
-- memcpy_multi: a multi-threaded implementation with OpenMP using cudaMemcpy for GPU communication
-- memcpy_multi_overlap:
+- memcpy_multi: a multi-threaded implementation with OpenMP using cudaMemcpy
+- memcpy_multi_overlap: a multi-threaded implementation with OpenMP using cudaMemcpy with overlapping communication
 - mpi:
 - mpi_overlap:
 - nccl:

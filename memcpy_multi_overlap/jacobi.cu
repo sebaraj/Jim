@@ -270,10 +270,10 @@ int main(int argc, char* argv[]) {
         int num_ranks_low = num_devices * chunk_size_low + num_devices - (ny - 2);
         int chunk_size_high = chunk_size_low + 1;
         chunk_size[dev_id] = (dev_id < num_ranks_low) ? chunk_size_low : chunk_size_high;
-        CUDA_RT_CALL(cudaMalloc(&a, nx * (chunk_size[dev_id] + 2) * sizeof(float)));
-        CUDA_RT_CALL(cudaMalloc(a_new + dev_id, nx * (chunk_size[dev_id] + 2) * sizeof(float)));
-        CUDA_RT_CALL(cudaMemset(a, 0, nx * (chunk_size[dev_id] + 2) * sizeof(float)));
-        CUDA_RT_CALL(cudaMemset(a_new[dev_id], 0, nx * (chunk_size[dev_id] + 2) * sizeof(float)));
+        CUDA_RT_CALL(cudaMalloc(&a, nx * (chunk_size + 2) * sizeof(float)));
+        CUDA_RT_CALL(cudaMalloc(a_new + dev_id, nx * (chunk_size + 2) * sizeof(float)));
+        CUDA_RT_CALL(cudaMemset(a, 0, nx * (chunk_size + 2) * sizeof(float)));
+        CUDA_RT_CALL(cudaMemset(a_new[dev_id], 0, nx * (chunk_size + 2) * sizeof(float)));
 
         // Calculate local domain boundaries
         int iy_start_global;
@@ -285,17 +285,17 @@ int main(int argc, char* argv[]) {
         }
 
         iy_start = 1;
-        iy_end[dev_id] = iy_start + chunk_size[dev_id];
+        iy_end[dev_id] = iy_start + chunk_size;
 
         // TODO: set boundaries on left/right
         initialize_bounds<<<(ny / num_devices) / 128 + 1, 128>>>(
-            a, a_new[dev_id], PI, iy_start_global - 1, nx, (chunk_size[dev_id] + 2), ny);
+            a, a_new[dev_id], PI, iy_start_global - 1, nx, (chunk_size + 2), ny);
 
         CUDA_RT_CALL(cudaGetLastError());
         CUDA_RT_CALL(cudaDeviceSynchronize());
-        CUDA_RT_CALL(cudaStreamCreate(&compute_stream + dev_id));
-        CUDA_RT_CALL(cudaStreamCreate(&push_top_stream + dev_id));
-        CUDA_RT_CALL(cudaStreamCreate(&push_bottom_stream + dev_id));
+        CUDA_RT_CALL(cudaStreamCreate(&compute_stream));
+        CUDA_RT_CALL(cudaStreamCreate(&push_top_stream));
+        CUDA_RT_CALL(cudaStreamCreate(&push_bottom_stream));
 
         CUDA_RT_CALL(cudaEventCreateWithFlags(&compute_done, cudaEventDisableTiming));
         CUDA_RT_CALL(cudaEventCreateWithFlags(push_top_done[0] + dev_id, cudaEventDisableTiming));
