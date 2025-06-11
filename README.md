@@ -5,6 +5,12 @@ equations using C++, CUDA, NCCL, NVSHMEM, OpenMP, and MPI.
 
 - memcpy_single: a single-threaded implementation using cudaMemcpy for GPU communication
 - memcpy_multi: a multi-threaded implementation with OpenMP using cudaMemcpy for GPU communication
+- memcpy_multi_overlap:
+- mpi:
+- mpi_overlap:
+- nccl:
+- nccl_overlap:
+- nvshmem:
 
 ### Requirements
 
