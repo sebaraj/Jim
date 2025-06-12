@@ -293,11 +293,23 @@ int main(int argc, char* argv[]) {
 
         CUDA_RT_CALL(cudaGetLastError());
         CUDA_RT_CALL(cudaDeviceSynchronize());
-        CUDA_RT_CALL(cudaStreamCreate(&compute_stream));
-        CUDA_RT_CALL(cudaStreamCreate(&push_top_stream));
-        CUDA_RT_CALL(cudaStreamCreate(&push_bottom_stream));
 
-        CUDA_RT_CALL(cudaEventCreateWithFlags(&compute_done, cudaEventDisableTiming));
+        int leastPriority = 0;
+        int greatestPriority = leastPriority;
+        CUDA_RT_CALL(cudaDeviceGetStreamPriorityRange(&leastPriority, &greatestPriority));
+
+        CUDA_RT_CALL(
+            cudaStreamCreateWithPriority(&compute_stream, cudaStreamDefault, leastPriority));
+        CUDA_RT_CALL(
+            cudaStreamCreateWithPriority(&push_top_stream, cudaStreamDefault, greatestPriority));
+        CUDA_RT_CALL(
+            cudaStreamCreateWithPriority(&push_bottom_stream, cudaStreamDefault, greatestPriority));
+        //
+        // CUDA_RT_CALL(cudaStreamCreate(&compute_stream));
+        // CUDA_RT_CALL(cudaStreamCreate(&push_top_stream));
+        // CUDA_RT_CALL(cudaStreamCreate(&push_bottom_stream));
+        //
+        // CUDA_RT_CALL(cudaEventCreateWithFlags(&compute_done, cudaEventDisableTiming));
         CUDA_RT_CALL(cudaEventCreateWithFlags(push_top_done[0] + dev_id, cudaEventDisableTiming));
         CUDA_RT_CALL(
             cudaEventCreateWithFlags(push_bottom_done[0] + dev_id, cudaEventDisableTiming));
