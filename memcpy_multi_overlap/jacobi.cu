@@ -360,7 +360,7 @@ int main(int argc, char* argv[]) {
         }
         CUDA_RT_CALL(cudaDeviceSynchronize());
 
-#pragma opm master
+#pragma omp master
         {
             if (!csv) printf("norm\n");
         }
@@ -388,41 +388,49 @@ int main(int argc, char* argv[]) {
         while (l2_norm > tol && iter < iter_max) {
             // for (int dev_id = 0; dev_id < num_devices; ++dev_id) {
             CUDA_RT_CALL(cudaMemsetAsync(l2_norm_d, 0, sizeof(real), compute_stream));
+            CUDA_RT_CALL(cudaEventRecord(reset_l2norm_done, compute_stream))
 
-            const int top = dev_id > 0 ? dev_id - 1 : (num_devices - 1);
-            const int bottom = (dev_id + 1) % num_devices;
-            // CUDA_RT_CALL(cudaSetDevice(dev_id));
-
-            CUDA_RT_CALL(cudaStreamWaitEvent(compute_stream, push_top_done[(iter % 2)][bottom], 0));
-            CUDA_RT_CALL(cudaStreamWaitEvent(compute_stream, push_bottom_done[(iter % 2)][top], 0));
+// need for sharing
+#pragma omp barrier
+            //
+            // const int top = dev_id > 0 ? dev_id - 1 : (num_devices - 1);
+            // const int bottom = (dev_id + 1) % num_devices;
+            // // CUDA_RT_CALL(cudaSetDevice(dev_id));
+            //
+            // CUDA_RT_CALL(cudaStreamWaitEvent(compute_stream, push_top_done[(iter % 2)][bottom],
+            // 0)); CUDA_RT_CALL(cudaStreamWaitEvent(compute_stream, push_bottom_done[(iter %
+            // 2)][top], 0));
 
             calculate_norm = (iter % nccheck) == 0 || (!csv && (iter % 100) == 0);
+            CUDA_RT_CALL(cudaStreamWaitEvent(compute_stream, push_top_done[(iter % 2)][dev_id], 0));
+
             // dim3 dim_grid((nx + dim_block_x - 1) / dim_block_x,
             // (chunk_size[dev_id] + dim_block_y - 1) / dim_block_y, 1);
 
             jacobi_kernel<dim_block_x, dim_block_y>
                 <<<dim_grid, {dim_block_x, dim_block_y, 1}, 0, compute_stream[dev_id]>>>(
-                    a_new[dev_id], a, l2_norm_d, iy_start, iy_end[dev_id], nx, calculate_norm);
+                    a_new[dev_id], a, l2_norm_d, iy_start + 1, iy_end[dev_id] - 1, nx,
+                    calculate_norm);
             CUDA_RT_CALL(cudaGetLastError());
             CUDA_RT_CALL(cudaEventRecord(compute_done, compute_stream));
 
-            if (calculate_norm)
-                CUDA_RT_CALL(cudaMemcpyAsync(l2_norm_h[dev_id], l2_norm_d[dev_id], sizeof(real),
-#pragma omp barrier
+            // if (calculate_norm)
+            // CUDA_RT_CALL(cudaMemcpyAsync(l2_norm_h[dev_id], l2_norm_d[dev_id], sizeof(real),
+            // #pragma omp barrier
+            // TODO: stopped here
             // periodic boundary conds
             CUDA_RT_CALL(cudaStreamWaitEvent(push_top_stream, compute_done, 0));
-            CUDA_RT_CALL(cudaMemcpyAsync(a_new[top] + (iy_end[top] * nx),
-                                         a_new + iy_start * nx, nx * sizeof(real),
-                                         cudaMemcpyDeviceToDevice, push_top_stream));
-            CUDA_RT_CALL(
-                cudaEventRecord(push_top_done[((iter + 1) % 2)][dev_id], push_top_stream));
+            CUDA_RT_CALL(cudaMemcpyAsync(a_new[top] + (iy_end[top] * nx), a_new + iy_start * nx,
+                                         nx * sizeof(real), cudaMemcpyDeviceToDevice,
+                                         push_top_stream));
+            CUDA_RT_CALL(cudaEventRecord(push_top_done[((iter + 1) % 2)][dev_id], push_top_stream));
 
             CUDA_RT_CALL(cudaStreamWaitEvent(push_bottom_stream, compute_done, 0));
             CUDA_RT_CALL(cudaMemcpyAsync(a_new[bottom], a_new[dev_id] + (iy_end[dev_id] - 1) * nx,
                                          nx * sizeof(real), cudaMemcpyDeviceToDevice,
                                          push_bottom_stream));
-            CUDA_RT_CALL(cudaEventRecord(push_bottom_done[((iter + 1) % 2)][dev_id],
-                                         push_bottom_stream));
+            CUDA_RT_CALL(
+                cudaEventRecord(push_bottom_done[((iter + 1) % 2)][dev_id], push_bottom_stream));
         }
 #pragma omp barrier
         if (calculate_norm) {
