@@ -323,10 +323,10 @@ int main(int argc, char* argv[]) {
             const int top = dev_id > 0 ? dev_id - 1 : (num_devices - 1);
             const int bottom = (dev_id + 1) % num_devices;
             CUDA_RT_CALL(cudaMemcpyAsync(a_new[top] + (iy_end[top] * nx),
-                                         a_new[dev_id] + iy_start[dev_id] * nx, nx * sizeof(real),
+                                         a_new[dev_id] + iy_start[dev_id] * nx, nx * sizeof(float),
                                          cudaMemcpyDeviceToDevice, push_top_stream[dev_id]));
             CUDA_RT_CALL(cudaMemcpyAsync(a_new[bottom], a_new[dev_id] + (iy_end[dev_id] - 1) * nx,
-                                         nx * sizeof(real), cudaMemcpyDeviceToDevice,
+                                         nx * sizeof(float), cudaMemcpyDeviceToDevice,
                                          push_bottom_stream[dev_id]));
         }
         for (int dev_id = 0; dev_id < num_devices; ++dev_id) {
@@ -343,7 +343,7 @@ int main(int argc, char* argv[]) {
     constexpr int dim_block_y = 32;
     int iter = 0;
     bool calculate_norm = true;
-    real l2_norm = 1.0;
+    float l2_norm = 1.0;
 
     for (int dev_id = 0; dev_id < num_devices; ++dev_id) {
         CUDA_RT_CALL(cudaSetDevice(dev_id));
@@ -358,7 +358,7 @@ int main(int argc, char* argv[]) {
             CUDA_RT_CALL(cudaSetDevice(dev_id));
 
             CUDA_RT_CALL(
-                cudaMemsetAsync(l2_norm_d[dev_id], 0, sizeof(real), compute_stream[dev_id]));
+                cudaMemsetAsync(l2_norm_d[dev_id], 0, sizeof(float), compute_stream[dev_id]));
 
             CUDA_RT_CALL(
                 cudaStreamWaitEvent(compute_stream[dev_id], push_top_done[(iter % 2)][bottom], 0));
@@ -377,21 +377,21 @@ int main(int argc, char* argv[]) {
             CUDA_RT_CALL(cudaEventRecord(compute_done[dev_id], compute_stream[dev_id]));
 
             if (calculate_norm) {
-                CUDA_RT_CALL(cudaMemcpyAsync(l2_norm_h[dev_id], l2_norm_d[dev_id], sizeof(real),
+                CUDA_RT_CALL(cudaMemcpyAsync(l2_norm_h[dev_id], l2_norm_d[dev_id], sizeof(float),
                                              cudaMemcpyDeviceToHost, compute_stream[dev_id]));
             }
 
             // periodic boundary conds
             CUDA_RT_CALL(cudaStreamWaitEvent(push_top_stream[dev_id], compute_done[dev_id], 0));
             CUDA_RT_CALL(cudaMemcpyAsync(a_new[top] + (iy_end[top] * nx),
-                                         a_new[dev_id] + iy_start[dev_id] * nx, nx * sizeof(real),
+                                         a_new[dev_id] + iy_start[dev_id] * nx, nx * sizeof(float),
                                          cudaMemcpyDeviceToDevice, push_top_stream[dev_id]));
             CUDA_RT_CALL(
                 cudaEventRecord(push_top_done[((iter + 1) % 2)][dev_id], push_top_stream[dev_id]));
 
             CUDA_RT_CALL(cudaStreamWaitEvent(push_bottom_stream[dev_id], compute_done[dev_id], 0));
             CUDA_RT_CALL(cudaMemcpyAsync(a_new[bottom], a_new[dev_id] + (iy_end[dev_id] - 1) * nx,
-                                         nx * sizeof(real), cudaMemcpyDeviceToDevice,
+                                         nx * sizeof(float), cudaMemcpyDeviceToDevice,
                                          push_bottom_stream[dev_id]));
             CUDA_RT_CALL(cudaEventRecord(push_bottom_done[((iter + 1) % 2)][dev_id],
                                          push_bottom_stream[dev_id]));
@@ -423,7 +423,7 @@ int main(int argc, char* argv[]) {
     for (int dev_id = 0; dev_id < num_devices; ++dev_id) {
         CUDA_RT_CALL(
             cudaMemcpy(a_h + offset, a[dev_id] + nx,
-                       std::min((nx * ny) - offset, nx * chunk_size[dev_id]) * sizeof(real),
+                       std::min((nx * ny) - offset, nx * chunk_size[dev_id]) * sizeof(float),
                        cudaMemcpyDeviceToHost));
         offset += std::min(chunk_size[dev_id] * nx, (nx * ny) - offset);
     }
