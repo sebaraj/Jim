@@ -6,8 +6,8 @@ equations using C++, CUDA, NCCL, NVSHMEM, OpenMP, and MPI.
 - memcpy_single: a single-threaded implementation using cudaMemcpy for GPU communication
 - memcpy_multi: a multi-threaded implementation with OpenMP using cudaMemcpy
 - memcpy_multi_overlap: a multi-threaded implementation with OpenMP using cudaMemcpy with overlapping communication
-- mpi:
-- mpi_overlap:
+- mpi: a multi-process implementation using CUDA-aware MPI
+- mpi_overlap: a multi-process implementation using CUDA-aware MPI with overlapping communication
 - nccl:
 - nccl_overlap:
 - nvshmem:
