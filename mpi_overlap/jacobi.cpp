@@ -380,21 +380,38 @@ int main(int argc, char* argv[]) {
     PUSH_RANGE("Jacobi solve", 0)
     while (l2_norm > tol && iter < iter_max) {
         CUDA_RT_CALL(cudaMemsetAsync(l2_norm_d, 0, sizeof(real), compute_stream));
+        CUDA_RT_CALL(cudaEventRecord(reset_l2norm_done, compute_stream));
 
+        if (use_hp_streams) {
+            launch_jacobi_kernel(a_new, a, l2_norm_d, (iy_start + 1), (iy_end - 1), nx,
+                                 calculate_norm, compute_stream);
+        }
+
+        CUDA_RT_CALL(cudaStreamWaitEvent(push_top_stream, reset_l2norm_done, 0));
         calculate_norm = (iter % nccheck) == 0 || (!csv && (iter % 100) == 0);
 
-        launch_jacobi_kernel(a_new, a, l2_norm_d, iy_start, iy_end, nx, calculate_norm,
-                             compute_stream);
-        CUDA_RT_CALL(cudaEventRecord(compute_done, compute_stream));
+        launch_jacobi_kernel(a_new, a, l2_norm_d, iy_start, iy_start + 1, nx, calculate_norm,
+                             push_top_stream);
+        CUDA_RT_CALL(cudaEventRecord(push_top_done, push_top_stream));
+        launch_jacobi_kernel(a_new, a, l2_norm_d, iy_end - 1, iy_end, nx, calculate_norm,
+                             push_bottom_stream);
+        CUDA_RT_CALL(cudaEventRecord(push_bottom_done, push_bottom_stream));
+
+        if (use_hp_streams) {
+            launch_jacobi_kernel(a_new, a, l2_norm_d, (iy_start + 1), (iy_end - 1), nx,
+                                 calculate_norm, compute_stream);
+        }
 
         if (calculate_norm) {
+            CUDA_RT_CALL(cudaStreamWaitEvent(compute_stream, push_top_done, 0));
+            CUDA_RT_CALL(cudaStreamWaitEvent(compute_stream, push_bottom_done, 0));
             CUDA_RT_CALL(cudaMemcpyAsync(l2_norm_h, l2_norm_d, sizeof(real), cudaMemcpyDeviceToHost,
                                          compute_stream));
         }
 
         const int top = rank > 0 ? rank - 1 : (size - 1);
         const int bottom = (rank + 1) % size;
-
+        // TODO: stopped here
         // Apply periodic boundary conditions
         CUDA_RT_CALL(cudaEventSynchronize(compute_done));
         PUSH_RANGE("MPI", 5)
