@@ -399,4 +399,36 @@ int main(int argc, char* argv[]) {
     }
 
     int global_result_correct = 1;
+
+    MPI_CALL(MPI_Allreduce(&result_correct, &global_result_correct, 1, MPI_INT, MPI_MIN,
+                           MPI_COMM_WORLD));
+    result_correct = global_result_correct;
+
+    if (rank == 0 && result_correct) {
+        if (csv) {
+            printf("mpi, %d, %d, %d, %d, %d, 1, %f, %f\n", nx, ny, iter_max, nccheck, size,
+                   (stop - start), runtime_serial);
+        } else {
+            printf("Num GPUs: %d.\n", size);
+            printf(
+                "%dx%d: 1 GPU: %8.4f s, %d GPUs: %8.4f s, speedup: %8.2f, "
+                "efficiency: %8.2f \n",
+                ny, nx, runtime_serial, size, (stop - start), runtime_serial / (stop - start),
+                runtime_serial / (size * (stop - start)) * 100);
+        }
+    }
+    CUDA_RT_CALL(cudaEventDestroy(compute_done));
+    CUDA_RT_CALL(cudaStreamDestroy(compute_stream));
+
+    CUDA_RT_CALL(cudaFreeHost(l2_norm_h));
+    CUDA_RT_CALL(cudaFree(l2_norm_d));
+
+    CUDA_RT_CALL(cudaFree(a_new));
+    CUDA_RT_CALL(cudaFree(a));
+
+    CUDA_RT_CALL(cudaFreeHost(a_h));
+    CUDA_RT_CALL(cudaFreeHost(a_ref_h));
+
+    MPI_CALL(MPI_Finalize());
+    return !result_correct;
 }
