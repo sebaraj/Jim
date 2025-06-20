@@ -73,15 +73,17 @@ const int num_colors = sizeof(colors) / sizeof(uint32_t);
         }                                                                                   \
     }
 
+// switch to real
 #ifdef USE_DOUBLE
+typedef double real;
 #define MPI_REAL_TYPE MPI_DOUBLE
 #else
 typedef float real;
 #define MPI_REAL_TYPE MPI_FLOAT
 #endif
 
-constexpr float PI = M_PI;
-constexpr float tol = 1.0e-8;
+constexpr real PI = M_PI;
+constexpr real tol = 1.0e-8;
 // constexpr int MAX_NUM_DEV = 4;  // cluster size @ vast.ai
 
 void launch_initialize_boundaries(real* __restrict__ const a_new, real* __restrict__ const a,
@@ -121,4 +123,34 @@ bool get_argbool(char** begin, char** end, const std::string& arg) {
 int main(int argc, char* argv[]) {
     MPI_CALL(MPI_Init(&argc, &argv));
     // awareness check?
+#if !defined(SKIP_CUDA_AWARENESS_CHECK) && defined(MPIX_CUDA_AWARE_SUPPORT)
+    if (1 != MPIX_Query_cuda_support()) {
+        fprintf(stderr, "The used MPI Implementation does not have CUDA-aware support enabled!\n");
+        MPI_CALL(MPI_Finalize());
+        return -1;
+    }
+#endif
+    int rank;
+    MPI_CALL(MPI_Comm_rank(MPI_COMM_WORLD, &rank));
+    int size;
+    MPI_CALL(MPI_Comm_size(MPI_COMM_WORLD, &size));
+    int num_devices = 0;
+    CUDA_RT_CALL(cudaGetDeviceCount(&num_devices));
+
+    const int iter_max = get_argval<int>(argv, argv + argc, "-niter", 1000);
+    const int nccheck = get_argval<int>(argv, argv + argc, "-nccheck", 1);
+    const int nx = get_argval<int>(argv, argv + argc, "-nx", 16384);
+    const int ny = get_argval<int>(argv, argv + argc, "-ny", 16384);
+    const bool csv = get_argbool(argv, argv + argc, "-csv");
+
+    int local_rank = -1;
+    {
+        MPI_Comm local_comm;
+        MPI_CALL(MPI_Comm_split_type(MPI_COMM_WORLD, MPI_COMM_TYPE_SHARED, rank, MPI_INFO_NULL,
+                                     &local_comm));
+        MPI_CALL(MPI_Comm_rank(local_comm, &local_rank));
+        MPI_CALL(MPI_Comm_free(&local_comm));
+    }
+
+    return 0;
 }
