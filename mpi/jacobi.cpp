@@ -330,4 +330,73 @@ int main(int argc, char* argv[]) {
             "every %d iterations\n",
             iter_max, ny, nx, nccheck);
     }
+
+    int iter = 0;
+    real l2_norm = 1.0;
+    bool calculate_norm = true;
+
+    MPI_CALL(MPI_Barrier(MPI_COMM_WORLD));
+    double start = MPI_Wtime();
+    PUSH_RANGE("Jacobi solve", 0)
+    while (l2_norm > tol && iter < iter_max) {
+        CUDA_RT_CALL(cudaMemsetAsync(l2_norm_d, 0, sizeof(real), compute_stream));
+
+        calculate_norm = (iter % nccheck) == 0 || (!csv && (iter % 100) == 0);
+
+        launch_jacobi_kernel(a_new, a, l2_norm_d, iy_start, iy_end, nx, calculate_norm,
+                             compute_stream);
+        CUDA_RT_CALL(cudaEventRecord(compute_done, compute_stream));
+
+        if (calculate_norm) {
+            CUDA_RT_CALL(cudaMemcpyAsync(l2_norm_h, l2_norm_d, sizeof(real), cudaMemcpyDeviceToHost,
+                                         compute_stream));
+        }
+
+        const int top = rank > 0 ? rank - 1 : (size - 1);
+        const int bottom = (rank + 1) % size;
+
+        // Apply periodic boundary conditions
+        CUDA_RT_CALL(cudaEventSynchronize(compute_done));
+        PUSH_RANGE("MPI", 5)
+        MPI_CALL(MPI_Sendrecv(a_new + iy_start * nx, nx, MPI_REAL_TYPE, top, 0,
+                              a_new + (iy_end * nx), nx, MPI_REAL_TYPE, bottom, 0, MPI_COMM_WORLD,
+                              MPI_STATUS_IGNORE));
+        MPI_CALL(MPI_Sendrecv(a_new + (iy_end - 1) * nx, nx, MPI_REAL_TYPE, bottom, 0, a_new, nx,
+                              MPI_REAL_TYPE, top, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE));
+        POP_RANGE
+
+        if (calculate_norm) {
+            CUDA_RT_CALL(cudaStreamSynchronize(compute_stream));
+            MPI_CALL(MPI_Allreduce(l2_norm_h, &l2_norm, 1, MPI_REAL_TYPE, MPI_SUM, MPI_COMM_WORLD));
+            l2_norm = std::sqrt(l2_norm);
+
+            if (!csv && 0 == rank && (iter % 100) == 0) {
+                printf("%5d, %0.6f\n", iter, l2_norm);
+            }
+        }
+
+        std::swap(a_new, a);
+        iter++;
+    }
+    double stop = MPI_Wtime();
+    POP_RANGE
+
+    CUDA_RT_CALL(cudaMemcpy(a_h + iy_start_global * nx, a + nx,
+                            std::min((ny - iy_start_global) * nx, chunk_size * nx) * sizeof(real),
+                            cudaMemcpyDeviceToHost));
+
+    int result_correct = 1;
+    for (int iy = iy_start_global; result_correct && (iy < iy_end_global); ++iy) {
+        for (int ix = 1; result_correct && (ix < (nx - 1)); ++ix) {
+            if (std::fabs(a_ref_h[iy * nx + ix] - a_h[iy * nx + ix]) > tol) {
+                fprintf(stderr,
+                        "ERROR on rank %d: a[%d * %d + %d] = %f does not match %f "
+                        "(reference)\n",
+                        rank, iy, nx, ix, a_h[iy * nx + ix], a_ref_h[iy * nx + ix]);
+                result_correct = 0;
+            }
+        }
+    }
+
+    int global_result_correct = 1;
 }
