@@ -100,7 +100,111 @@ void launch_jacobi_kernel(real* __restrict__ const a_new, const real* __restrict
 
 double single_gpu(const int nx, const int ny, const int iter_max, real* const a_ref_h,
                   const int nccheck, const bool print) {
-    return 0.0;  // placeholder
+    real* a;
+    real* a_new;
+
+    cudaStream_t compute_stream;
+    cudaStream_t push_top_stream;
+    cudaStream_t push_bottom_stream;
+    cudaEvent_t compute_done;
+    cudaEvent_t push_top_done;
+    cudaEvent_t push_bottom_done;
+
+    real* l2_norm_d;
+    real* l2_norm_h;
+
+    int iy_start = 1;
+    int iy_end = (ny - 1);
+
+    CUDA_RT_CALL(cudaMalloc(&a, nx * ny * sizeof(real)));
+    CUDA_RT_CALL(cudaMalloc(&a_new, nx * ny * sizeof(real)));
+
+    CUDA_RT_CALL(cudaMemset(a, 0, nx * ny * sizeof(real)));
+    CUDA_RT_CALL(cudaMemset(a_new, 0, nx * ny * sizeof(real)));
+
+    // Set diriclet boundary conditions on left and right boarder
+    launch_initialize_boundaries(a, a_new, PI, 0, nx, ny, ny);
+    CUDA_RT_CALL(cudaDeviceSynchronize());
+
+    CUDA_RT_CALL(cudaStreamCreate(&compute_stream));
+    CUDA_RT_CALL(cudaStreamCreate(&push_top_stream));
+    CUDA_RT_CALL(cudaStreamCreate(&push_bottom_stream));
+    CUDA_RT_CALL(cudaEventCreateWithFlags(&compute_done, cudaEventDisableTiming));
+    CUDA_RT_CALL(cudaEventCreateWithFlags(&push_top_done, cudaEventDisableTiming));
+    CUDA_RT_CALL(cudaEventCreateWithFlags(&push_bottom_done, cudaEventDisableTiming));
+
+    CUDA_RT_CALL(cudaMalloc(&l2_norm_d, sizeof(real)));
+    CUDA_RT_CALL(cudaMallocHost(&l2_norm_h, sizeof(real)));
+
+    CUDA_RT_CALL(cudaDeviceSynchronize());
+
+    if (print)
+        printf(
+            "Single GPU jacobi relaxation: %d iterations on %d x %d mesh with "
+            "norm "
+            "check every %d iterations\n",
+            iter_max, ny, nx, nccheck);
+
+    int iter = 0;
+    real l2_norm = 1.0;
+    bool calculate_norm = true;
+
+    double start = MPI_Wtime();
+    PUSH_RANGE("Jacobi solve", 0)
+    while (l2_norm > tol && iter < iter_max) {
+        CUDA_RT_CALL(cudaMemsetAsync(l2_norm_d, 0, sizeof(real), compute_stream));
+
+        CUDA_RT_CALL(cudaStreamWaitEvent(compute_stream, push_top_done, 0));
+        CUDA_RT_CALL(cudaStreamWaitEvent(compute_stream, push_bottom_done, 0));
+
+        calculate_norm = (iter % nccheck) == 0 || (iter % 100) == 0;
+        launch_jacobi_kernel(a_new, a, l2_norm_d, iy_start, iy_end, nx, calculate_norm,
+                             compute_stream);
+        CUDA_RT_CALL(cudaEventRecord(compute_done, compute_stream));
+
+        if (calculate_norm) {
+            CUDA_RT_CALL(cudaMemcpyAsync(l2_norm_h, l2_norm_d, sizeof(real), cudaMemcpyDeviceToHost,
+                                         compute_stream));
+        }
+
+        CUDA_RT_CALL(cudaStreamWaitEvent(push_top_stream, compute_done, 0));
+        CUDA_RT_CALL(cudaMemcpyAsync(a_new, a_new + (iy_end - 1) * nx, nx * sizeof(real),
+                                     cudaMemcpyDeviceToDevice, push_top_stream));
+        CUDA_RT_CALL(cudaEventRecord(push_top_done, push_top_stream));
+
+        CUDA_RT_CALL(cudaStreamWaitEvent(push_bottom_stream, compute_done, 0));
+        CUDA_RT_CALL(cudaMemcpyAsync(a_new + iy_end * nx, a_new + iy_start * nx, nx * sizeof(real),
+                                     cudaMemcpyDeviceToDevice, compute_stream));
+        CUDA_RT_CALL(cudaEventRecord(push_bottom_done, push_bottom_stream));
+
+        if (calculate_norm) {
+            CUDA_RT_CALL(cudaStreamSynchronize(compute_stream));
+            l2_norm = *l2_norm_h;
+            l2_norm = std::sqrt(l2_norm);
+            if (print && (iter % 100) == 0) printf("%5d, %0.6f\n", iter, l2_norm);
+        }
+
+        std::swap(a_new, a);
+        iter++;
+    }
+    POP_RANGE
+    double stop = MPI_Wtime();
+
+    CUDA_RT_CALL(cudaMemcpy(a_ref_h, a, nx * ny * sizeof(real), cudaMemcpyDeviceToHost));
+
+    CUDA_RT_CALL(cudaEventDestroy(push_bottom_done));
+    CUDA_RT_CALL(cudaEventDestroy(push_top_done));
+    CUDA_RT_CALL(cudaEventDestroy(compute_done));
+    CUDA_RT_CALL(cudaStreamDestroy(push_bottom_stream));
+    CUDA_RT_CALL(cudaStreamDestroy(push_top_stream));
+    CUDA_RT_CALL(cudaStreamDestroy(compute_stream));
+
+    CUDA_RT_CALL(cudaFreeHost(l2_norm_h));
+    CUDA_RT_CALL(cudaFree(l2_norm_d));
+
+    CUDA_RT_CALL(cudaFree(a_new));
+    CUDA_RT_CALL(cudaFree(a));
+    return (stop - start);
 }
 
 // Generic argument parsing functions
@@ -218,5 +322,12 @@ int main(int argc, char* argv[]) {
     }
     POP_RANGE
 
-    return 0;
+    CUDA_RT_CALL(cudaDeviceSynchronize());
+
+    if (!csv && 0 == rank) {
+        printf(
+            "Jacobi relaxation: %d iterations on %d x %d mesh with norm check "
+            "every %d iterations\n",
+            iter_max, ny, nx, nccheck);
+    }
 }
