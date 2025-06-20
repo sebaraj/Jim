@@ -8,8 +8,9 @@ equations using C++, CUDA, NCCL, OpenMP, and MPI.
 - memcpy_multi_overlap: a multi-threaded implementation with OpenMP using cudaMemcpy with overlapping communication
 - mpi: a multi-process implementation using CUDA-aware MPI
 - mpi_overlap: a multi-process implementation using CUDA-aware MPI with overlapping communication
-- nccl:
-- nccl_overlap:
+- nccl: a multi-process implementation with MPI + NCCL using NCCL for GPU communication
+- nccl_overlap: a multi-process implementation with MPI + NCCL using NCCL with overlapping
+  communication
 
 ### Requirements
 
