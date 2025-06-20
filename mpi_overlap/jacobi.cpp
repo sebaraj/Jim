@@ -411,9 +411,9 @@ int main(int argc, char* argv[]) {
 
         const int top = rank > 0 ? rank - 1 : (size - 1);
         const int bottom = (rank + 1) % size;
-        // TODO: stopped here
+
         // Apply periodic boundary conditions
-        CUDA_RT_CALL(cudaEventSynchronize(compute_done));
+        CUDA_RT_CALL(cudaEventSynchronize(push_top_stream));
         PUSH_RANGE("MPI", 5)
         MPI_CALL(MPI_Sendrecv(a_new + iy_start * nx, nx, MPI_REAL_TYPE, top, 0,
                               a_new + (iy_end * nx), nx, MPI_REAL_TYPE, bottom, 0, MPI_COMM_WORLD,
@@ -474,7 +474,11 @@ int main(int argc, char* argv[]) {
                 runtime_serial / (size * (stop - start)) * 100);
         }
     }
-    CUDA_RT_CALL(cudaEventDestroy(compute_done));
+    CUDA_RT_CALL(cudaEventDestroy(reset_l2norm_done));
+    CUDA_RT_CALL(cudaEventDestroy(push_bottom_done));
+    CUDA_RT_CALL(cudaEventDestroy(push_top_done));
+    CUDA_RT_CALL(cudaStreamDestroy(push_bottom_stream));
+    CUDA_RT_CALL(cudaStreamDestroy(push_top_stream));
     CUDA_RT_CALL(cudaStreamDestroy(compute_stream));
 
     CUDA_RT_CALL(cudaFreeHost(l2_norm_h));
