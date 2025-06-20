@@ -152,5 +152,71 @@ int main(int argc, char* argv[]) {
         MPI_CALL(MPI_Comm_free(&local_comm));
     }
 
+    CUDA_RT_CALL(cudaSetDevice(local_rank % num_devices));
+    CUDA_RT_CALL(cudaFree(0));
+
+    real* a_ref_h;
+    CUDA_RT_CALL(cudaMallocHost(&a_ref_h, nx * ny * sizeof(real)));
+    real* a_h;
+    CUDA_RT_CALL(cudaMallocHost(&a_h, nx * ny * sizeof(real)));
+    double runtime_serial = single_gpu(nx, ny, iter_max, a_ref_h, nccheck, !csv && (0 == rank));
+
+    int chunk_size;
+    int chunk_size_low = (ny - 2) / size;
+    int chunk_size_high = chunk_size_low + 1;
+    int num_ranks_low = size * chunk_size_low + size - (ny - 2);
+    if (rank < num_ranks_low)
+        chunk_size = chunk_size_low;
+    else
+        chunk_size = chunk_size_high;
+
+    real* a;
+    CUDA_RT_CALL(cudaMalloc(&a, nx * (chunk_size + 2) * sizeof(real)));
+    real* a_new;
+    CUDA_RT_CALL(cudaMalloc(&a_new, nx * (chunk_size + 2) * sizeof(real)));
+
+    CUDA_RT_CALL(cudaMemset(a, 0, nx * (chunk_size + 2) * sizeof(real)));
+    CUDA_RT_CALL(cudaMemset(a_new, 0, nx * (chunk_size + 2) * sizeof(real)));
+
+    int iy_start_global;
+    if (rank < num_ranks_low) {
+        iy_start_global = rank * chunk_size_low + 1;
+    } else {
+        iy_start_global
+            = num_ranks_low * chunk_size_low + (rank - num_ranks_low) * chunk_size_high + 1;
+    }
+
+    int iy_end_global = iy_start_global + chunk_size - 1;  // My last index in the global array
+
+    int iy_start = 1;
+    int iy_end = iy_start + chunk_size;
+
+    // Set diriclet boundary conditions on left and right boarder
+    launch_initialize_boundaries(a, a_new, PI, iy_start_global - 1, nx, (chunk_size + 2), ny);
+    CUDA_RT_CALL(cudaDeviceSynchronize());
+
+    cudaStream_t compute_stream;
+    CUDA_RT_CALL(cudaStreamCreate(&compute_stream));
+    cudaEvent_t compute_done;
+    CUDA_RT_CALL(cudaEventCreateWithFlags(&compute_done, cudaEventDisableTiming));
+
+    real* l2_norm_d;
+    CUDA_RT_CALL(cudaMalloc(&l2_norm_d, sizeof(real)));
+    real* l2_norm_h;
+    CUDA_RT_CALL(cudaMallocHost(&l2_norm_h, sizeof(real)));
+
+    PUSH_RANGE("MPI_Warmup", 5)
+    for (int i = 0; i < 10; ++i) {
+        const int top = rank > 0 ? rank - 1 : (size - 1);
+        const int bottom = (rank + 1) % size;
+        MPI_CALL(MPI_Sendrecv(a_new + iy_start * nx, nx, MPI_REAL_TYPE, top, 0,
+                              a_new + (iy_end * nx), nx, MPI_REAL_TYPE, bottom, 0, MPI_COMM_WORLD,
+                              MPI_STATUS_IGNORE));
+        MPI_CALL(MPI_Sendrecv(a_new + (iy_end - 1) * nx, nx, MPI_REAL_TYPE, bottom, 0, a_new, nx,
+                              MPI_REAL_TYPE, top, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE));
+        std::swap(a_new, a);
+    }
+    POP_RANGE
+
     return 0;
 }

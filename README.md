@@ -10,7 +10,6 @@ equations using C++, CUDA, NCCL, NVSHMEM, OpenMP, and MPI.
 - mpi_overlap: a multi-process implementation using CUDA-aware MPI with overlapping communication
 - nccl:
 - nccl_overlap:
-- nvshmem:
 
 ### Requirements
 
@@ -18,7 +17,6 @@ equations using C++, CUDA, NCCL, NVSHMEM, OpenMP, and MPI.
 - OpenMP
 - MPI
 - NCCL
-- NVSHMEM
 - NVCC-compatible hardware. I used an NVIDIA RTX 4090 for development and a cluster of 4 NVIDIA
   H200s for testing on vast.ai.
 
