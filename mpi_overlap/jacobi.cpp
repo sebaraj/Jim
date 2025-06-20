@@ -131,7 +131,6 @@ double single_gpu(const int nx, const int ny, const int iter_max, real* const a_
     CUDA_RT_CALL(cudaMemset(a, 0, nx * ny * sizeof(real)));
     CUDA_RT_CALL(cudaMemset(a_new, 0, nx * ny * sizeof(real)));
 
-    // Set diriclet boundary conditions on left and right boarder
     launch_initialize_boundaries(a, a_new, PI, 0, nx, ny, ny);
     CUDA_RT_CALL(cudaDeviceSynchronize());
 
@@ -192,7 +191,6 @@ double single_gpu(const int nx, const int ny, const int iter_max, real* const a_
             l2_norm = std::sqrt(l2_norm);
             if (print && (iter % 100) == 0) printf("%5d, %0.6f\n", iter, l2_norm);
         }
-
         std::swap(a_new, a);
         iter++;
     }
@@ -255,6 +253,15 @@ int main(int argc, char* argv[]) {
     const int nx = get_argval<int>(argv, argv + argc, "-nx", 16384);
     const int ny = get_argval<int>(argv, argv + argc, "-ny", 16384);
     const bool csv = get_argbool(argv, argv + argc, "-csv");
+    const bool use_hp_streams = get_argbool(argv, argv + argc, "-hp_streams");
+
+    if (nccheck > 1 && !use_hp_streams && 0 == rank) {
+        fprintf(
+            stderr,
+            "WARN: When not calculating the norm in every iteration kernels might be executed in "
+            "an order that breaks communication computation overlap. Also enable -use_hp_streams "
+            "to avoid this issue.\n");
+    }
 
     int local_rank = -1;
     {
@@ -287,7 +294,6 @@ int main(int argc, char* argv[]) {
     CUDA_RT_CALL(cudaMalloc(&a, nx * (chunk_size + 2) * sizeof(real)));
     real* a_new;
     CUDA_RT_CALL(cudaMalloc(&a_new, nx * (chunk_size + 2) * sizeof(real)));
-
     CUDA_RT_CALL(cudaMemset(a, 0, nx * (chunk_size + 2) * sizeof(real)));
     CUDA_RT_CALL(cudaMemset(a_new, 0, nx * (chunk_size + 2) * sizeof(real)));
 
@@ -308,10 +314,35 @@ int main(int argc, char* argv[]) {
     launch_initialize_boundaries(a, a_new, PI, iy_start_global - 1, nx, (chunk_size + 2), ny);
     CUDA_RT_CALL(cudaDeviceSynchronize());
 
+    // priority (use openmp as ref)
+    int leastPriority = 0;
+    int greatestPriority = leastPriority;
+    CUDA_RT_CALL(cudaDeviceGetStreamPriorityRange(&leastPriority, &greatestPriority));
+
     cudaStream_t compute_stream;
-    CUDA_RT_CALL(cudaStreamCreate(&compute_stream));
-    cudaEvent_t compute_done;
-    CUDA_RT_CALL(cudaEventCreateWithFlags(&compute_done, cudaEventDisableTiming));
+    cudaStream_t push_top_stream;
+    cudaStream_t push_bottom_stream;
+    if (use_hp_streams) {
+        CUDA_RT_CALL(
+            cudaStreamCreateWithPriority(&compute_stream, cudaStreamDefault, leastPriority));
+        CUDA_RT_CALL(
+            cudaStreamCreateWithPriority(&push_top_stream, cudaStreamDefault, greatestPriority));
+        CUDA_RT_CALL(
+            cudaStreamCreateWithPriority(&push_bottom_stream, cudaStreamDefault, greatestPriority));
+    } else {
+        CUDA_RT_CALL(cudaStreamCreate(&compute_stream));
+        CUDA_RT_CALL(cudaStreamCreate(&push_top_stream));
+        CUDA_RT_CALL(cudaStreamCreate(&push_bottom_stream));
+    }
+    // CUDA_RT_CALL(cudaStreamCreate(&compute_stream));
+    // cudaEvent_t compute_done;
+    // CUDA_RT_CALL(cudaEventCreateWithFlags(&compute_done, cudaEventDisableTiming));
+    cudaEvent_t push_top_done;
+    CUDA_RT_CALL(cudaEventCreateWithFlags(&push_top_done, cudaEventDisableTiming));
+    cudaEvent_t push_bottom_done;
+    CUDA_RT_CALL(cudaEventCreateWithFlags(&push_bottom_done, cudaEventDisableTiming));
+    cudaEvent_t reset_l2norm_done;
+    CUDA_RT_CALL(cudaEventCreateWithFlags(&reset_l2norm_done, cudaEventDisableTiming));
 
     real* l2_norm_d;
     CUDA_RT_CALL(cudaMalloc(&l2_norm_d, sizeof(real)));
