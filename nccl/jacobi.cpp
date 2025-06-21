@@ -1,5 +1,6 @@
 // jacobi.cpp
 #include <mpi.h>
+#include <nccl.h>
 
 #include <algorithm>
 #include <cmath>
@@ -82,13 +83,31 @@ const int num_colors = sizeof(colors) / sizeof(uint32_t);
         }                                                                                   \
     }
 
+#define NCCL_CALL(call)                                                                     \
+    {                                                                                       \
+        ncclResult_t ncclStatus = call;                                                     \
+        if (ncclSuccess != ncclStatus) {                                                    \
+            fprintf(stderr,                                                                 \
+                    "ERROR: NCCL call \"%s\" in line %d of file %s failed "                 \
+                    "with "                                                                 \
+                    "%s (%d).\n",                                                           \
+                    #call, __LINE__, __FILE__, ncclGetErrorString(ncclStatus), ncclStatus); \
+            exit(ncclStatus);                                                               \
+        }                                                                                   \
+    }
+
+#define NCCL_VERSION_UB NCCL_VERSION(2, 19, 1)
+#define NCCL_UB_SUPPORT NCCL_VERSION_CODE >= NCCL_VERSION_UB
+
 // switch to real
 #ifdef USE_DOUBLE
 typedef double real;
 #define MPI_REAL_TYPE MPI_DOUBLE
+#define NCCL_REAL_TYPE ncclDouble
 #else
 typedef float real;
 #define MPI_REAL_TYPE MPI_FLOAT
+#define NCCL_REAL_TYPE ncclFloat
 #endif
 
 constexpr real PI = M_PI;
@@ -97,15 +116,11 @@ constexpr real tol = 1.0e-8;
 
 void launch_initialize_boundaries(real* __restrict__ const a_new, real* __restrict__ const a,
                                   const real pi, const int offset, const int nx, const int my_ny,
-                                  const int ny) {
-    return;
-}
+                                  const int ny);
 
 void launch_jacobi_kernel(real* __restrict__ const a_new, const real* __restrict__ const a,
                           real* __restrict__ const l2_norm, const int iy_start, const int iy_end,
-                          const int nx, const bool calculate_norm, cudaStream_t stream) {
-    return;
-}
+                          const int nx, const bool calculate_norm, cudaStream_t stream);
 
 double single_gpu(const int nx, const int ny, const int iter_max, real* const a_ref_h,
                   const int nccheck, const bool print) {

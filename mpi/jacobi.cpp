@@ -97,15 +97,11 @@ constexpr real tol = 1.0e-8;
 
 void launch_initialize_boundaries(real* __restrict__ const a_new, real* __restrict__ const a,
                                   const real pi, const int offset, const int nx, const int my_ny,
-                                  const int ny) {
-    return;
-}
+                                  const int ny);
 
 void launch_jacobi_kernel(real* __restrict__ const a_new, const real* __restrict__ const a,
                           real* __restrict__ const l2_norm, const int iy_start, const int iy_end,
-                          const int nx, const bool calculate_norm, cudaStream_t stream) {
-    return;
-}
+                          const int nx, const bool calculate_norm, cudaStream_t stream);
 
 double single_gpu(const int nx, const int ny, const int iter_max, real* const a_ref_h,
                   const int nccheck, const bool print) {
