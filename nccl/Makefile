@@ -3,6 +3,7 @@ NVCC=nvcc
 MPICXX=mpicxx
 MPIRUN ?= mpirun
 CUDA_HOME ?= /usr/local/cuda
+NCCL_HOME ?= /usr
 # Ampere
 GENCODE_SM80    := -gencode arch=compute_80,code=sm_80 
 
@@ -23,8 +24,8 @@ ifdef SKIP_CUDA_AWARENESS_CHECK
 endif
 
 NVCC_FLAGS += -lineinfo $(GENCODE_FLAGS) -std=c++17
-MPICXX_FLAGS += -DUSE_NVTX -I$(CUDA_HOME)/include -std=c++17
-LD_FLAGS = -L$(CUDA_HOME)/lib64 -lcudart -ldl
+MPICXX_FLAGS += -DUSE_NVTX -I$(CUDA_HOME)/include -I$(NCCL_HOME)/include -std=c++17
+LD_FLAGS = -L$(CUDA_HOME)/lib64 -L$(NCCL_HOME)/lib -lcudart -ldl -lnccl
 
 jacobi: Makefile jacobi.cpp jacobi_kernels.o
 	$(MPICXX) $(MPICXX_FLAGS) jacobi.cpp jacobi_kernels.o $(LD_FLAGS) -o jacobi

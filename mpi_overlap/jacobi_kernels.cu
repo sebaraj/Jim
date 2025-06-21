@@ -89,4 +89,3 @@ void launch_jacobi_kernel(real* __restrict__ const a_new, const real* __restrict
         a_new, a, l2_norm, iy_start, iy_end, nx, calculate_norm);
     CUDA_RT_CALL(cudaGetLastError());
 }
-/ jacobi_kernals.cu
