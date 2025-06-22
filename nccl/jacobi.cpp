@@ -331,6 +331,55 @@ int main(int argc, char* argv[]) {
 
     real* a;
     real* a_new;
+#if NCCL_UB_SUPPORT
+    void* a_reg_handle;
+    void* a_new_reg_handle;
+    if (user_buffer_reg) {
+        NCCL_CALL(ncclMemAlloc((void**)&a, nx * (chunk_size + 2) * sizeof(real)));
+        NCCL_CALL(ncclMemAlloc((void**)&a_new, nx * (chunk_size + 2) * sizeof(real)));
+        NCCL_CALL(
+            ncclCommRegister(nccl_comm, a, nx * (chunk_size + 2) * sizeof(real), &a_reg_handle));
+        NCCL_CALL(ncclCommRegister(nccl_comm, a_new, nx * (chunk_size + 2) * sizeof(real),
+                                   &a_new_reg_handle));
+        if (nccl_version < 22304) {
+            fprintf(stderr,
+                    "WARNING: -user_buffer_reg available, but Jacobi communication pattern needs "
+                    "NCCL 2.23.4 or later.\n");
+        }
+    } else
+#endif  // NCCL_UB_SUPPORT
+    {
+        CUDA_RT_CALL(cudaMalloc(&a, nx * (chunk_size + 2) * sizeof(real)));
+        CUDA_RT_CALL(cudaMalloc(&a_new, nx * (chunk_size + 2) * sizeof(real)));
+    }
+
+    CUDA_RT_CALL(cudaMemset(a, 0, nx * (chunk_size + 2) * sizeof(real)));
+    CUDA_RT_CALL(cudaMemset(a_new, 0, nx * (chunk_size + 2) * sizeof(real)));
+
+    int iy_start_global;
+    if (rank < num_ranks_low) {
+        iy_start_global = rank * chunk_size_low + 1;
+    } else {
+        iy_start_global
+            = num_ranks_low * chunk_size_low + (rank - num_ranks_low) * chunk_size_high + 1;
+    }
+    int iy_end_global = iy_start_global + chunk_size - 1;
+
+    int iy_start = 1;
+    int iy_end = iy_start + chunk_size;
+
+    launch_initialize_boundaries(a, a_new, PI, iy_start_global - 1, nx, (chunk_size + 2), ny);
+    CUDA_RT_CALL(cudaDeviceSynchronize());
+
+    cudaStream_t compute_stream;
+    CUDA_RT_CALL(cudaStreamCreate(&compute_stream));
+    cudaEvent_t compute_done;
+    CUDA_RT_CALL(cudaEventCreateWithFlags(&compute_done, cudaEventDisableTiming));
+
+    real* l2_norm_d;
+    CUDA_RT_CALL(cudaMalloc(&l2_norm_d, sizeof(real)));
+    real* l2_norm_h;
+    CUDA_RT_CALL(cudaMallocHost(&l2_norm_h, sizeof(real)));
 
     // TODO:
     return !result_correct;
