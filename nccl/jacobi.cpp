@@ -297,12 +297,40 @@ int main(int argc, char* argv[]) {
         return 1;
     }
     if (1 == num_devices) {
-        // Only 1 device visbile assuming GPU affinity is handled via CUDA_VISIBLE_DEVICES
         CUDA_RT_CALL(cudaSetDevice(0));
     } else {
         CUDA_RT_CALL(cudaSetDevice(local_rank));
     }
     CUDA_RT_CALL(cudaFree(0));
+
+    ncclComm_t nccl_comm;
+    NCCL_CALL(ncclCommInitRank(&nccl_comm, size, nccl_uid, rank));
+    int nccl_version = 0;
+    NCCL_CALL(ncclGetVersion(&nccl_version));
+    if (nccl_version < 2800) {
+        fprintf(stderr, "ERROR NCCL 2.8 or newer is required.\n");
+        NCCL_CALL(ncclCommDestroy(nccl_comm));
+        MPI_CALL(MPI_Finalize());
+        return 1;
+    }
+
+    real* a_ref_h;
+    CUDA_RT_CALL(cudaMallocHost(&a_ref_h, nx * ny * sizeof(real)));
+    real* a_h;
+    CUDA_RT_CALL(cudaMallocHost(&a_h, nx * ny * sizeof(real)));
+    double runtime_serial = single_gpu(nx, ny, iter_max, a_ref_h, nccheck, !csv && (0 == rank));
+
+    int chunk_size;
+    int chunk_size_low = (ny - 2) / size;
+    int chunk_size_high = chunk_size_low + 1;
+    int num_ranks_low = size * chunk_size_low + size - (ny - 2);
+    if (rank < num_ranks_low)
+        chunk_size = chunk_size_low;
+    else
+        chunk_size = chunk_size_high;
+
+    real* a;
+    real* a_new;
 
     // TODO:
     return !result_correct;
