@@ -496,6 +496,30 @@ int main(int argc, char* argv[]) {
                 runtime_serial / (size * (stop - start)) * 100);
         }
     }
-    // TODO:
+    CUDA_RT_CALL(cudaEventDestroy(compute_done));
+    CUDA_RT_CALL(cudaStreamDestroy(compute_stream));
+
+    CUDA_RT_CALL(cudaFreeHost(l2_norm_h));
+    CUDA_RT_CALL(cudaFree(l2_norm_d));
+
+#if NCCL_UB_SUPPORT
+    if (user_buffer_reg) {
+        NCCL_CALL(ncclCommDeregister(nccl_comm, a_new_reg_handle));
+        NCCL_CALL(ncclCommDeregister(nccl_comm, a_reg_handle));
+        NCCL_CALL(ncclMemFree(a_new));
+        NCCL_CALL(ncclMemFree(a));
+    } else
+#endif  // NCCL_UB_SUPPORT
+    {
+        CUDA_RT_CALL(cudaFree(a_new));
+        CUDA_RT_CALL(cudaFree(a));
+    }
+
+    CUDA_RT_CALL(cudaFreeHost(a_h));
+    CUDA_RT_CALL(cudaFreeHost(a_ref_h));
+
+    NCCL_CALL(ncclCommDestroy(nccl_comm));
+
+    MPI_CALL(MPI_Finalize());
     return !result_correct;
 }
