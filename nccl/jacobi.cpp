@@ -381,6 +381,86 @@ int main(int argc, char* argv[]) {
     real* l2_norm_h;
     CUDA_RT_CALL(cudaMallocHost(&l2_norm_h, sizeof(real)));
 
+    PUSH_RANGE("NCCL_Warmup", 5)
+    for (int i = 0; i < 10; ++i) {
+        const int top = rank > 0 ? rank - 1 : (size - 1);
+        const int bottom = (rank + 1) % size;
+        NCCL_CALL(ncclGroupStart());
+        NCCL_CALL(ncclRecv(a_new, nx, NCCL_REAL_TYPE, top, nccl_comm, compute_stream));
+        NCCL_CALL(ncclSend(a_new + (iy_end - 1) * nx, nx, NCCL_REAL_TYPE, bottom, nccl_comm,
+                           compute_stream));
+        NCCL_CALL(
+            ncclRecv(a_new + (iy_end * nx), nx, NCCL_REAL_TYPE, bottom, nccl_comm, compute_stream));
+        NCCL_CALL(
+            ncclSend(a_new + iy_start * nx, nx, NCCL_REAL_TYPE, top, nccl_comm, compute_stream));
+        NCCL_CALL(ncclGroupEnd());
+        CUDA_RT_CALL(cudaStreamSynchronize(compute_stream));
+        std::swap(a_new, a);
+    }
+    POP_RANGE
+
+    CUDA_RT_CALL(cudaDeviceSynchronize());
+
+    if (!csv && 0 == rank) {
+        printf(
+            "Jacobi relaxation: %d iterations on %d x %d mesh with norm check "
+            "every %d iterations\n",
+            iter_max, ny, nx, nccheck);
+    }
+
+    int iter = 0;
+    real l2_norm = 1.0;
+    bool calculate_norm = true;
+
+    MPI_CALL(MPI_Barrier(MPI_COMM_WORLD));
+    double start = MPI_Wtime();
+    PUSH_RANGE("Jacobi solve", 0)
+    while (l2_norm > tol && iter < iter_max) {
+        CUDA_RT_CALL(cudaMemsetAsync(l2_norm_d, 0, sizeof(real), compute_stream));
+
+        calculate_norm = (iter % nccheck) == 0 || (!csv && (iter % 100) == 0);
+
+        launch_jacobi_kernel(a_new, a, l2_norm_d, iy_start, iy_end, nx, calculate_norm,
+                             compute_stream);
+        CUDA_RT_CALL(cudaEventRecord(compute_done, compute_stream));
+
+        if (calculate_norm) {
+            CUDA_RT_CALL(cudaMemcpyAsync(l2_norm_h, l2_norm_d, sizeof(real), cudaMemcpyDeviceToHost,
+                                         compute_stream));
+        }
+
+        const int top = rank > 0 ? rank - 1 : (size - 1);
+        const int bottom = (rank + 1) % size;
+
+        PUSH_RANGE("NCCL_LAUNCH", 5)
+        NCCL_CALL(ncclGroupStart());
+        NCCL_CALL(ncclRecv(a_new, nx, NCCL_REAL_TYPE, top, nccl_comm, compute_stream));
+        NCCL_CALL(ncclSend(a_new + (iy_end - 1) * nx, nx, NCCL_REAL_TYPE, bottom, nccl_comm,
+                           compute_stream));
+        NCCL_CALL(
+            ncclRecv(a_new + (iy_end * nx), nx, NCCL_REAL_TYPE, bottom, nccl_comm, compute_stream));
+        NCCL_CALL(
+            ncclSend(a_new + iy_start * nx, nx, NCCL_REAL_TYPE, top, nccl_comm, compute_stream));
+        NCCL_CALL(ncclGroupEnd());
+        POP_RANGE
+
+        if (calculate_norm) {
+            CUDA_RT_CALL(cudaStreamSynchronize(compute_stream));
+            MPI_CALL(MPI_Allreduce(l2_norm_h, &l2_norm, 1, MPI_REAL_TYPE, MPI_SUM, MPI_COMM_WORLD));
+            l2_norm = std::sqrt(l2_norm);
+
+            if (!csv && 0 == rank && (iter % 100) == 0) {
+                printf("%5d, %0.6f\n", iter, l2_norm);
+            }
+        }
+
+        std::swap(a_new, a);
+        iter++;
+    }
+    CUDA_RT_CALL(cudaDeviceSynchronize());
+    double stop = MPI_Wtime();
+    POP_RANGE
+
     // TODO:
     return !result_correct;
 }
