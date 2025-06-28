@@ -461,6 +461,41 @@ int main(int argc, char* argv[]) {
     double stop = MPI_Wtime();
     POP_RANGE
 
+    CUDA_RT_CALL(cudaMemcpy(a_h + iy_start_global * nx, a + nx,
+                            std::min((ny - iy_start_global) * nx, chunk_size * nx) * sizeof(real),
+                            cudaMemcpyDeviceToHost));
+
+    int result_correct = 1;
+    for (int iy = iy_start_global; result_correct && (iy < iy_end_global); ++iy) {
+        for (int ix = 1; result_correct && (ix < (nx - 1)); ++ix) {
+            if (std::fabs(a_ref_h[iy * nx + ix] - a_h[iy * nx + ix]) > tol) {
+                fprintf(stderr,
+                        "ERROR on rank %d: a[%d * %d + %d] = %f does not match %f "
+                        "(reference)\n",
+                        rank, iy, nx, ix, a_h[iy * nx + ix], a_ref_h[iy * nx + ix]);
+                result_correct = 0;
+            }
+        }
+    }
+
+    int global_result_correct = 1;
+    MPI_CALL(MPI_Allreduce(&result_correct, &global_result_correct, 1, MPI_INT, MPI_MIN,
+                           MPI_COMM_WORLD));
+    result_correct = global_result_correct;
+
+    if (rank == 0 && result_correct) {
+        if (csv) {
+            printf("nccl, %d, %d, %d, %d, %d, 1, %f, %f\n", nx, ny, iter_max, nccheck, size,
+                   (stop - start), runtime_serial);
+        } else {
+            printf("Num GPUs: %d.\n", size);
+            printf(
+                "%dx%d: 1 GPU: %8.4f s, %d GPUs: %8.4f s, speedup: %8.2f, "
+                "efficiency: %8.2f \n",
+                ny, nx, runtime_serial, size, (stop - start), runtime_serial / (stop - start),
+                runtime_serial / (size * (stop - start)) * 100);
+        }
+    }
     // TODO:
     return !result_correct;
 }
