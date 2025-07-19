@@ -466,7 +466,6 @@ int main(int argc, char* argv[]) {
         std::swap(a_new, a);
         iter++;
     }
-    // NOTE: stopped here
     CUDA_RT_CALL(cudaDeviceSynchronize());
     double stop = MPI_Wtime();
     POP_RANGE
@@ -506,7 +505,10 @@ int main(int argc, char* argv[]) {
                 runtime_serial / (size * (stop - start)) * 100);
         }
     }
-    CUDA_RT_CALL(cudaEventDestroy(compute_done));
+    CUDA_RT_CALL(cudaEventDestroy(reset_l2norm_done));
+    CUDA_RT_CALL(cudaEventDestroy(push_done));
+    CUDA_RT_CALL(cudaEventDestroy(push_prep_done));
+    CUDA_RT_CALL(cudaStreamDestroy(push_stream));
     CUDA_RT_CALL(cudaStreamDestroy(compute_stream));
 
     CUDA_RT_CALL(cudaFreeHost(l2_norm_h));
