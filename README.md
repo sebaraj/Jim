@@ -15,12 +15,33 @@ equations using C++, CUDA, NCCL, OpenMP, and MPI.
 ### Requirements
 
 - CUDA
-- OpenMP
-- MPI
+- OpenMP/OpenMP capable compiler (e.g., GCC, Clang)
+- MPI (CUDA-aware implementation, e.g. OpenMPI)
 - NCCL
 - NVCC-compatible hardware. I used an NVIDIA RTX 4090 for development and a cluster of 4 NVIDIA
   H200s for testing on vast.ai.
 
 ### Build
 
+Each implementation has its own `Makefile`. Navigate to the desired implementation directory and run:
+
+```
+jim$ cd nccl_overlap
+nccl_overlap$ make
+nvcc -DHAVE_CUB -Xcompiler -fopenmp -lineinfo -DUSE_NVTX -ldl -gencode arch=compute_70,code=sm_70 -gencode arch=compute_80,code=sm_80 -gencode arch=compute_90,code=sm_90 -gencode arch=compute_90,code=compute_90 -std=c++14 jacobi.cu -o jacobi
+nccl_overlap$ ls jacobi
+./jacobi
+```
+
 ### Run
+
+All implementations can be run with the following options:
+
+- -niter: How many iterations to carry out (default 1000)
+- -nccheck: How often to check for convergence (default 1)
+- -nx: Size of the domain in x direction (default 16384)
+- -ny: Size of the domain in y direction (default 16384)
+- -csv: Print performance results as -csv
+- -use_hp_streams: use high priority streams for `mpi_overlap` to hide kernel launch latencies of boundary kernels
+
+- e.g. `./jacobi -niter 1000 -nccheck 1 -nx 16384 -ny 16384 -csv`
